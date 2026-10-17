@@ -14,7 +14,7 @@ Requires Rust 1.95 (see `rust-toolchain.toml`).
 cargo run -p pocketanon --release
 ```
 
-On first start, pick a model in Settings and download it (about 350 MB for the default multilingual PII model). Downloads go to the platform data directory and nowhere else.
+On first start, pick a model in Settings and download it (about 580 MB for the default multilingual PII model in fp16; the int8 variant is much smaller but loses most of its recall). Downloads go to the platform data directory and nowhere else.
 
 ## Layout
 
@@ -25,6 +25,12 @@ On first start, pick a model in Settings and download it (about 350 MB for the d
 | `crates/detect-rules` | Rule Detector: regex patterns and checksums |
 | `crates/documents` | Wordcraft-based adapter: load, segment, edit, save, render |
 | `apps/pocketanon` | The egui desktop app |
-| `fixtures/` | Synthetic sample inputs (no real data) |
+| `fixtures/` | Synthetic sample inputs (no real data); `make_fixture` regenerates the DOCX and RTF |
+
+Headless end-to-end run over a file, useful for checking a change without the UI:
+
+```sh
+cargo run -p pocketanon --example anonymize -- fixtures/letter_de.docx
+```
 
 Vocabulary lives in `CONTEXT.md`; decisions in `docs/adr/`; the PoC plan in `docs/poc-plan.md`.

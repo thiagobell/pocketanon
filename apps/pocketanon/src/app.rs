@@ -217,20 +217,25 @@ impl PocketAnon {
     // -----------------------------------------------------------------------------------------
     // Models
 
-    /// Load the chosen Model at start-up; pick the first installed Registry entry when none is chosen.
+    /// Load the chosen Model at start-up. When none is chosen, or the chosen Registry entry is
+    /// unknown or not installed, fall back to the first installed Registry entry.
     fn start_model(&mut self) {
-        let choice = self.settings.model.clone().or_else(|| {
-            self.services
+        let installed = |id: &str| self.services.models.status(id) == ModelStatus::Installed;
+        let choice = match self.settings.model.clone() {
+            Some(ModelChoice::Folder(p)) => Some(ModelChoice::Folder(p)),
+            Some(ModelChoice::Registry(id)) if installed(&id) => Some(ModelChoice::Registry(id)),
+            _ => self
+                .services
                 .models
                 .models()
                 .into_iter()
-                .find(|m| self.services.models.status(&m.id) == ModelStatus::Installed)
-                .map(|m| ModelChoice::Registry(m.id))
-        });
+                .find(|m| installed(&m.id))
+                .map(|m| ModelChoice::Registry(m.id)),
+        };
         match choice {
-            Some(ModelChoice::Registry(id)) if self.services.models.status(&id) == ModelStatus::Installed => self.use_model(&id),
+            Some(ModelChoice::Registry(id)) => self.use_model(&id),
             Some(ModelChoice::Folder(p)) => self.use_model_folder(p),
-            _ => {}
+            None => {}
         }
     }
 
