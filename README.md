@@ -18,8 +18,16 @@ This is a PoC built to explore the idea, not a finished product. Known limits:
 
 - PDF is not supported.
 - RTF output loses headers, footers, footnotes and comments.
-- The app bundle is unsigned.
+- The macOS app is only ad-hoc signed, not notarized. See [Install a CI build on macOS](#install-a-ci-build-on-macos).
 - Inference runs over MLX on Macs but for small content, it is probably slower than CPU. 
+
+## Install a CI build on macOS
+
+Open the `.dmg` and drag PocketAnon onto Applications. On first launch macOS blocks the app because it is not notarized. Allow it once under System Settings > Privacy & Security > Open Anyway, or run:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/PocketAnon.app
+```
 
 ## Build and run
 

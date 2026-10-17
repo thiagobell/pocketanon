@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds a release binary and wraps it as PocketAnon.app (unsigned) in target/bundle/.
+# Builds a release binary and wraps it as PocketAnon.app (ad-hoc signed) in target/bundle/.
 # A bare Mach-O binary cannot carry an icon; macOS reads it from the bundle's Info.plist.
 set -eu
 cd "$(dirname "$0")/.."
@@ -49,4 +49,9 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 touch "$app"
+# Ad-hoc sign the whole bundle. The linker only signs the bare binary, which leaves the
+# Info.plist and resources unsealed; a quarantined download then fails Gatekeeper with
+# "PocketAnon is damaged". This is not a Developer ID signature: users still have to
+# allow the app once (Open Anyway, or remove the quarantine attribute).
+codesign --force --sign - "$app"
 echo "built $app  (open it with: open $app)"
