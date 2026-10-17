@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "PocketAnon document adapter: TXT, DOCX and RTF on the Wordcraft document model (ADR-0002)"
 
 [dependencies]
 pocketanon-core = { workspace = true }
+wordcraft-doc = { workspace = true }
+wordcraft-docx = { workspace = true }
+wordcraft-formats = { workspace = true }
+wordcraft-layout = { workspace = true }
+wordcraft-render = { workspace = true }
+wordcraft-fonts = { workspace = true }

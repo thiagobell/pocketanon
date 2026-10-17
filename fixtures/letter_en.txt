@@ -1,0 +1,18 @@
+Example Corp
+1 Sample Street
+Springfield, IL 62701
+
+October 15, 2026
+
+Dear Mr. Doe,
+
+Thank you for your letter of October 3. As discussed with Jane Roe, we have recorded your customer number 4711-0815. Your details: date of birth 03/12/1980, residing at 7 Sample Way, Springfield.
+
+Please transfer the outstanding amount to IBAN GB82 WEST 1234 5698 7654 32 at Example Bank, or use card 4111 1111 1111 1111. For questions call +1 (555) 123-4567 or email john.doe@example.com. See https://www.example.com/customers for details.
+
+John Doe also asked us to note his passport number C01X00T47.
+
+Kind regards,
+
+Jane Roe
+Example Corp
