@@ -23,11 +23,16 @@ This is a PoC built to explore the idea, not a finished product. Known limits:
 
 ## Install a CI build on macOS
 
-Open the `.dmg` and drag PocketAnon onto Applications. On first launch macOS blocks the app because it is not notarized. Allow it once under System Settings > Privacy & Security > Open Anyway, or run:
+The app is not notarized, so macOS blocks a copy downloaded with a browser. The warning says it could not verify the developer and only offers "Done". Remove the browser's quarantine flag from the disk image before you open it:
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/PocketAnon.app
+xattr -d com.apple.quarantine ~/Downloads/pocketanon-macos-aarch64.dmg
+open ~/Downloads/pocketanon-macos-aarch64.dmg
 ```
+
+Then drag PocketAnon onto Applications and open it as usual. If a blocked copy is already in Applications, delete it first. Running `xattr` on the installed app usually fails with "Operation not permitted", because macOS protects apps from being modified.
+
+Without a terminal: open the app once, click "Done", then go to System Settings > Privacy & Security and click "Open Anyway" next to the PocketAnon message. The button only shows for about an hour after the blocked launch.
 
 ## Build and run
 
