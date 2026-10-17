@@ -72,6 +72,13 @@ pub trait Detector: Send + Sync {
     }
 
     fn detect(&self, text: &str, req: &DetectRequest<'_>) -> Result<Vec<Candidate>, DetectorError>;
+
+    /// Detect over several texts at once; the result has one entry per input, in order.
+    /// Model detectors override this to run one inference over the whole batch, which is much
+    /// faster than one call per paragraph. The default loops over [`Detector::detect`].
+    fn detect_batch(&self, texts: &[&str], req: &DetectRequest<'_>) -> Result<Vec<Vec<Candidate>>, DetectorError> {
+        texts.iter().map(|t| self.detect(t, req)).collect()
+    }
 }
 
 /// A detector backed by a closure; handy in tests and for simple rule sets.

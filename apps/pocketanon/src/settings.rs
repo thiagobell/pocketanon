@@ -57,7 +57,7 @@ impl Default for Settings {
             enabled_groups: catalog.groups.iter().filter(|g| g.default_enabled).map(|g| g.name.clone()).collect(),
             disabled_types: Vec::new(),
             custom_types: Vec::new(),
-            threshold: 0.5,
+            threshold: 0.3,
             strategy: Strategy::IndexedRedaction,
             model: None,
             theme: Theme::Dark,

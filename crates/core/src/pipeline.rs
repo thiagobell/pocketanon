@@ -60,22 +60,47 @@ impl Pipeline {
     /// Detect over the whole input. Returns merged, non-overlapping candidates with offsets into
     /// `text`. A failing detector aborts the run; the UI decides how to present that.
     pub fn detect(&self, text: &str) -> Result<Vec<Candidate>, DetectorError> {
-        let plan = ChunkPlan::new(text, self.max_words());
+        Ok(self.detect_many(&[text])?.pop().unwrap_or_default())
+    }
+
+    /// Detect over several independent texts (e.g. the segments of a document). Every text is
+    /// chunked, all chunks go to each detector in one batch, and the results are merged per
+    /// text. Offsets are relative to each input text.
+    pub fn detect_many(&self, texts: &[&str]) -> Result<Vec<Vec<Candidate>>, DetectorError> {
+        let max_words = self.max_words();
         let req = DetectRequest { types: &self.config.types, languages: &self.config.languages };
-        let mut all = Vec::new();
+        // (text index, chunk span) for every chunk of every text, in order.
+        let mut owners: Vec<(usize, crate::types::Span)> = Vec::new();
+        let mut chunk_texts: Vec<&str> = Vec::new();
+        for (i, text) in texts.iter().enumerate() {
+            for chunk in ChunkPlan::new(text, max_words).chunks {
+                owners.push((i, chunk.span));
+                chunk_texts.push(chunk.text(text));
+            }
+        }
+        let mut per_text: Vec<Vec<Candidate>> = vec![Vec::new(); texts.len()];
+        if chunk_texts.is_empty() {
+            return Ok(per_text);
+        }
         for d in &self.detectors {
-            for chunk in &plan.chunks {
-                let local = d.detect(chunk.text(text), &req)?;
+            let results = d.detect_batch(&chunk_texts, &req)?;
+            if results.len() != chunk_texts.len() {
+                return Err(DetectorError::failed(
+                    d.name(),
+                    format!("returned {} results for {} chunks", results.len(), chunk_texts.len()),
+                ));
+            }
+            for ((owner, span), (chunk_text, local)) in owners.iter().zip(chunk_texts.iter().zip(results)) {
                 for mut c in local {
-                    if !c.span.is_valid_in(chunk.text(text)) {
+                    if !c.span.is_valid_in(chunk_text) {
                         continue; // defensive: a detector returned garbage offsets
                     }
-                    c.span = c.span.shifted(chunk.span.start);
-                    all.push(c);
+                    c.span = c.span.shifted(span.start);
+                    per_text[*owner].push(c);
                 }
             }
         }
-        Ok(merge(all))
+        Ok(per_text.into_iter().map(merge).collect())
     }
 }
 
@@ -130,6 +155,49 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].text(text), "DE89370400440532013000");
         assert_eq!(out[0].entity_type.as_str(), "iban");
+    }
+
+    #[test]
+    fn detect_many_keeps_results_per_text_and_batches_chunks() {
+        use std::sync::Mutex;
+        let calls = std::sync::Arc::new(Mutex::new(Vec::<usize>::new()));
+        let c2 = calls.clone();
+        struct Batchy(std::sync::Arc<Mutex<Vec<usize>>>);
+        impl Detector for Batchy {
+            fn kind(&self) -> DetectorKind {
+                DetectorKind::Model
+            }
+            fn name(&self) -> String {
+                "batchy".into()
+            }
+            fn max_words(&self) -> Option<usize> {
+                Some(2)
+            }
+            fn detect(&self, text: &str, req: &DetectRequest<'_>) -> Result<Vec<Candidate>, DetectorError> {
+                Ok(self.detect_batch(&[text], req)?.pop().unwrap())
+            }
+            fn detect_batch(&self, texts: &[&str], _: &DetectRequest<'_>) -> Result<Vec<Vec<Candidate>>, DetectorError> {
+                self.0.lock().unwrap().push(texts.len());
+                Ok(texts
+                    .iter()
+                    .map(|t| {
+                        t.match_indices("Anna")
+                            .map(|(i, m)| Candidate::new(Span::new(i, i + m.len()), "person", 0.9, DetectorKind::Model))
+                            .collect()
+                    })
+                    .collect())
+            }
+        }
+        let p = Pipeline::new(PipelineConfig::default()).with_detector(Batchy(c2));
+        let texts = ["Anna hier.\n\nBob dort.", "", "Und Anna nochmal da"];
+        let out = p.detect_many(&texts).unwrap();
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].len(), 1);
+        assert!(out[1].is_empty());
+        assert_eq!(out[2][0].span, Span::new(4, 8));
+        // one batch call for all chunks of all texts
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert!(calls.lock().unwrap()[0] >= 3);
     }
 
     #[test]

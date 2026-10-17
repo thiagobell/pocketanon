@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 
 use pocketanon_core::{AnonymizableDocument, Detector, DocumentError, Format, Language};
 
+pub mod real;
+#[cfg_attr(not(test), allow(dead_code))]
 pub mod stubs;
 
 /// Everything the UI needs from the outside world.

@@ -12,6 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 pocketanon-core = { workspace = true }
+pocketanon-detect-rules = { workspace = true }
+pocketanon-detect-gliner = { workspace = true }
+pocketanon-documents = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
 rfd = { workspace = true }

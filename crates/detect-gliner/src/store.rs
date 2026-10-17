@@ -128,7 +128,7 @@ impl ModelStore {
 }
 
 /// Finds the ONNX graph in a model directory. Tries `preferred` first, then the known variant
-/// names (int8, fp16, fp32), then any `*.onnx` in `onnx/` or the directory itself (sorted).
+/// names (fp16, int8, fp32), then any `*.onnx` in `onnx/` or the directory itself (sorted).
 pub fn find_onnx_file(dir: &Path, preferred: Option<Quantization>) -> Option<PathBuf> {
     let known = preferred.into_iter().chain(Quantization::ALL);
     for q in known {

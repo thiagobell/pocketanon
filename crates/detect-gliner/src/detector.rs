@@ -28,7 +28,7 @@ pub const DEFAULT_THRESHOLD: f32 = 0.2;
 /// How to load a Model.
 #[derive(Clone, Debug)]
 pub struct GlinerOptions {
-    /// Which ONNX variant to load. `None` takes the first present of int8, fp16, fp32, then any
+    /// Which ONNX variant to load. `None` takes the first present of fp16, int8, fp32, then any
     /// `*.onnx` file.
     pub quantization: Option<Quantization>,
     /// Explicit ONNX file (absolute, or relative to the model directory); overrides `quantization`.
@@ -130,22 +130,46 @@ impl GlinerDetector {
     /// Runs the model for `labels` (already normalised), batching them by
     /// [`MAX_TYPES_PER_CALL`].
     pub fn detect_labels(&self, text: &str, labels: &[String]) -> Result<Vec<Candidate>, GlinerError> {
-        if text.trim().is_empty() || labels.is_empty() {
-            return Ok(Vec::new());
+        Ok(self.detect_labels_batch(&[text], labels)?.pop().unwrap_or_default())
+    }
+
+    /// One inference over all `texts` (per label batch). Empty texts are skipped and come back
+    /// as empty results, so the output always has one entry per input.
+    pub fn detect_labels_batch(&self, texts: &[&str], labels: &[String]) -> Result<Vec<Vec<Candidate>>, GlinerError> {
+        let mut out: Vec<Vec<Candidate>> = vec![Vec::new(); texts.len()];
+        let live: Vec<usize> = (0..texts.len()).filter(|&i| !texts[i].trim().is_empty()).collect();
+        if live.is_empty() || labels.is_empty() {
+            return Ok(out);
         }
         let batches = batch_labels(labels, MAX_TYPES_PER_CALL);
         let multi = batches.len() > 1;
-        let mut out = Vec::new();
         for batch in batches {
-            let input = TextInput::new(vec![text.to_string()], batch).map_err(|e| GlinerError::Inference(e.to_string()))?;
+            let input = TextInput::new(live.iter().map(|&i| texts[i].to_string()).collect(), batch)
+                .map_err(|e| GlinerError::Inference(e.to_string()))?;
             let output = self.model.inference(input).map_err(|e| GlinerError::Inference(e.to_string()))?;
-            out.extend(spans_to_candidates(text, output.spans.iter().flatten()));
+            for (k, spans) in output.spans.iter().enumerate() {
+                let Some(&i) = live.get(k) else { break };
+                out[i].extend(spans_to_candidates(texts[i], spans.iter()));
+            }
         }
-        if multi {
-            out = flatten_overlaps(out);
+        for cands in out.iter_mut() {
+            if multi {
+                *cands = flatten_overlaps(std::mem::take(cands));
+            }
+            cands.sort_by_key(|c| c.span);
         }
-        out.sort_by_key(|c| c.span);
         Ok(out)
+    }
+
+    fn labels_for(&self, req: &DetectRequest<'_>) -> Vec<String> {
+        let mut labels: Vec<String> = Vec::with_capacity(req.types.len());
+        for t in req.types {
+            let l = t.as_str();
+            if !l.is_empty() && !labels.iter().any(|x| x == l) {
+                labels.push(l.to_string());
+            }
+        }
+        labels
     }
 }
 
@@ -165,18 +189,19 @@ impl Detector for GlinerDetector {
     }
 
     fn detect(&self, text: &str, req: &DetectRequest<'_>) -> Result<Vec<Candidate>, DetectorError> {
-        let mut labels: Vec<String> = Vec::with_capacity(req.types.len());
-        for t in req.types {
-            let l = t.as_str();
-            if !l.is_empty() && !labels.iter().any(|x| x == l) {
-                labels.push(l.to_string());
+        Ok(self.detect_batch(&[text], req)?.pop().unwrap_or_default())
+    }
+
+    fn detect_batch(&self, texts: &[&str], req: &DetectRequest<'_>) -> Result<Vec<Vec<Candidate>>, DetectorError> {
+        let labels = self.labels_for(req);
+        let limit = max_words_for_types(labels.len().min(MAX_TYPES_PER_CALL));
+        for text in texts {
+            let words = text.split_whitespace().count();
+            if words > limit {
+                log::warn!("{}: chunk of {words} words exceeds the recommended limit", self.name);
             }
         }
-        let words = text.split_whitespace().count();
-        if words > max_words_for_types(labels.len().min(MAX_TYPES_PER_CALL)) {
-            log::warn!("{}: chunk of {words} words exceeds the recommended limit", self.name);
-        }
-        self.detect_labels(text, &labels).map_err(|e| DetectorError::failed(self.name.clone(), e))
+        self.detect_labels_batch(texts, &labels).map_err(|e| DetectorError::failed(self.name.clone(), e))
     }
 }
 

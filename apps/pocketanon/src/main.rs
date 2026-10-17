@@ -18,12 +18,24 @@ mod worker;
 mod ui_tests;
 
 use services::Services;
-use services::stubs::{FakeModelManager, PlainTextLoader};
+use services::real::{GlinerModelManager, WordcraftLoader};
 
-/// Builds the services the app runs with. STUBS for now: the lead swaps in
-/// `pocketanon-documents`, `pocketanon-detect-rules` and `pocketanon-detect-gliner` here.
+/// Builds the services the app runs with: the Rule Detector is always on, documents go through
+/// the Wordcraft adapter, and models come from the GLiNER Registry. The stubs in
+/// `services::stubs` remain for UI tests only.
 fn services() -> Services {
-    Services { detectors: Vec::new(), documents: Box::new(PlainTextLoader), models: Box::new(FakeModelManager) }
+    let models: Box<dyn services::ModelManager> = match GlinerModelManager::new() {
+        Ok(m) => Box::new(m),
+        Err(e) => {
+            log::error!("model manager unavailable, falling back to demo: {e}");
+            Box::new(services::stubs::FakeModelManager)
+        }
+    };
+    Services {
+        detectors: vec![Box::new(pocketanon_detect_rules::RuleDetector::new())],
+        documents: Box::new(WordcraftLoader),
+        models,
+    }
 }
 
 fn main() -> eframe::Result {

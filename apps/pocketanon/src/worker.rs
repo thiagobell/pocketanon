@@ -32,6 +32,9 @@ impl Detector for ArcDetector {
     fn detect(&self, text: &str, req: &DetectRequest<'_>) -> Result<Vec<Candidate>, DetectorError> {
         self.0.detect(text, req)
     }
+    fn detect_batch(&self, texts: &[&str], req: &DetectRequest<'_>) -> Result<Vec<Vec<Candidate>>, DetectorError> {
+        self.0.detect_batch(texts, req)
+    }
 }
 
 pub type SharedDoc = Arc<Mutex<Box<dyn AnonymizableDocument>>>;
@@ -112,11 +115,11 @@ impl Jobs {
             for d in detectors {
                 p.add_detector(Box::new(ArcDetector(d)));
             }
-            let result = segments
-                .into_iter()
-                .filter(|(_, t)| !t.trim().is_empty())
-                .map(|(id, t)| p.detect(&t).map(|c| (id, c)))
-                .collect();
+            let segments: Vec<(SegmentId, String)> = segments.into_iter().filter(|(_, t)| !t.trim().is_empty()).collect();
+            let texts: Vec<&str> = segments.iter().map(|(_, t)| t.as_str()).collect();
+            let result = p
+                .detect_many(&texts)
+                .map(|all| segments.iter().map(|(id, _)| *id).zip(all).collect::<Vec<_>>());
             let _ = tx.send(Msg::Detected { target, ticket, result });
         });
     }

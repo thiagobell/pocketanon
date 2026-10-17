@@ -68,13 +68,24 @@ impl Indexer {
     }
 }
 
-/// Case-, whitespace- and trailing-punctuation-insensitive key for "same entity".
+/// Leading titles that models like GLiNER include in a person span. Stripped for indexing so
+/// "Herr Max Mustermann" and "Max Mustermann" share one index.
+const HONORIFICS: &[&str] = &[
+    "herr", "herrn", "frau", "hr.", "fr.", "mr", "mr.", "mrs", "mrs.", "ms", "ms.", "miss", "mx", "mx.", "dr", "dr.",
+    "prof", "prof.", "sir", "madam", "monsieur", "madame", "m.", "mme", "sr.", "sra.", "señor", "señora",
+];
+
+/// Case-, whitespace-, honorific- and trailing-punctuation-insensitive key for "same entity".
 fn normalise(s: &str) -> String {
-    s.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim_end_matches(['.', ',', ';', ':'])
-        .to_lowercase()
+    let mut words: Vec<&str> = s.split_whitespace().collect();
+    while let Some(first) = words.first() {
+        if words.len() > 1 && HONORIFICS.contains(&first.to_lowercase().as_str()) {
+            words.remove(0);
+        } else {
+            break;
+        }
+    }
+    words.join(" ").trim_end_matches(['.', ',', ';', ':']).to_lowercase()
 }
 
 /// One concrete edit: replace the bytes in `span` of the original text with `with`.
@@ -168,6 +179,18 @@ mod tests {
         // second paragraph of the same document: Anna keeps 1, a new person gets 2
         let (b, _) = apply("Bob und Anna", &[e(0, 3, "person"), e(8, 12, "person")], &mut ix);
         assert_eq!(b, "[PERSON_2] und [PERSON_1]");
+    }
+
+    #[test]
+    fn honorifics_do_not_split_identity() {
+        let mut ix = Indexer::new(Strategy::IndexedRedaction);
+        assert_eq!(ix.placeholder(&"person".into(), "Herr Max Mustermann"), "[PERSON_1]");
+        assert_eq!(ix.placeholder(&"person".into(), "Max Mustermann"), "[PERSON_1]");
+        assert_eq!(ix.placeholder(&"person".into(), "Dr. Max Mustermann"), "[PERSON_1]");
+        assert_eq!(ix.placeholder(&"person".into(), "Frau Erika Musterfrau"), "[PERSON_2]");
+        // a bare title is not stripped to nothing
+        assert_eq!(ix.placeholder(&"person".into(), "Frau"), "[PERSON_3]");
+        assert_eq!(ix.distinct(), 3);
     }
 
     #[test]

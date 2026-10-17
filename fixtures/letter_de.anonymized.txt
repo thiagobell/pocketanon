@@ -1,0 +1,18 @@
+[ORGANIZATION_1]
+[ADDRESS_1]
+[LOCATION_1]
+
+[LOCATION_2], [DATE_OF_BIRTH_1]
+
+Sehr geehrter [PERSON_1],
+
+vielen Dank für Ihr Schreiben vom 3. Oktober. Wie mit [PERSON_2] besprochen, haben wir Ihre Kundennummer [CUSTOMER_NUMBER_1] im System hinterlegt. Ihre Angaben: geboren am [DATE_OF_BIRTH_2], wohnhaft in der [ADDRESS_2].
+
+Bitte überweisen Sie den offenen Betrag auf das Konto IBAN [IBAN_1] bei der [ORGANIZATION_2]. Für Rückfragen erreichen Sie mich unter [PHONE_NUMBER_1] oder per E-Mail an [EMAIL_1]. Weitere Informationen finden Sie unter [URL_1].
+
+[PERSON_3] hat zudem gebeten, seine Steuer-ID [TAX_NUMBER_1] zu vermerken.
+
+Mit freundlichen Grüßen
+
+[PERSON_4]
+[ORGANIZATION_1]
