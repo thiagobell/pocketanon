@@ -27,3 +27,20 @@ targets = [
 ]
 ignore-build-dependencies = false
 ignore-dev-dependencies = true
+
+
+# ring carries license headers in many individual source files, and the scan
+# picked up a different set on macOS than on the Linux CI runner. Pin ring to
+# its two top-level license files so the output is the same everywhere.
+[ring.clarify]
+license = "Apache-2.0 AND ISC"
+
+[[ring.clarify.files]]
+path = "LICENSE-BoringSSL"
+license = "Apache-2.0"
+checksum = "005fc765ddc5115da796cca915baa9557abae13ff35e0a47c47affc56f6c414d"
+
+[[ring.clarify.files]]
+path = "LICENSE-other-bits"
+license = "ISC"
+checksum = "f025ccfb7dfb6bdfedc75ca0f67acc69e6fb4998143d834f7c2f38a29989680f"
