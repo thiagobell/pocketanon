@@ -1,0 +1,40 @@
+# PocketAnon proof of concept
+
+Decisions from the planning session on 2026-10-17. Vocabulary is in [CONTEXT.md](../CONTEXT.md); durable decisions are in [docs/adr](./adr).
+
+## Scope
+
+- Text Anonymization and File Anonymization (TXT, DOCX, RTF). No PDF (ADR-0001).
+- Detection = Model Detector (GLiNER via `gline-rs` on ONNX Runtime, pure Rust) + Rule Detector (patterns and checksums), merged.
+- Replacement Strategies: Indexed Redaction (default), Redaction. No pseudonymization.
+- Review step with highlights, candidate list, threshold slider, type change, reject, manual span addition (Text workspace first).
+- Document preview from Wordcraft layout and render crates (ADR-0002).
+- Default model: multilingual PII GLiNER, downloaded on first run into the app data dir; local-folder override. Languages are multi-select.
+- Settings persist, content never does (ADR-0003).
+- UI: egui/eframe, dark theme default, two workspaces (Text, File), settings drawer, Cmd+K command palette, styled after the ArtCraft apps.
+
+## Workspace layout
+
+- `crates/core`: domain types, Detector trait, Merging, Chunking, Replacement Strategies, Summary. No I/O.
+- `crates/detect-gliner`: Model Detector, Registry, downloader.
+- `crates/detect-rules`: Rule Detector, per-language patterns.
+- `crates/documents`: Wordcraft adapter (load, enumerate stories, replace at run level, save, render pages). Only crate depending on Wordcraft.
+- `apps/pocketanon`: the eframe application.
+
+## Acceptance
+
+1. German/English letter with names, address, IBAN, email, phone through the Text workspace: review, apply, copy. Under ~2 s per page after model load.
+2. DOCX with header, footer, table and footnote: preview renders, highlights shown, result opens in Word with formatting intact and every entity replaced in every story.
+3. Same for RTF and TXT.
+4. A Custom Type ("project code name") is detected.
+5. Relaunch: settings persist, no content trace.
+
+## Test focus (critical parts)
+
+- `core`: Merging (overlaps, nesting, rule-wins-boundaries, higher-confidence-wins-type), Chunking (byte offsets map back exactly, multibyte text, long paragraphs), Indexed Redaction numbering across chunks and repeated entities, Replacement on overlapping/adjacent spans. Property tests for offset round-tripping.
+- `detect-rules`: positive and negative fixtures per pattern, IBAN mod-97, card Luhn, German tax number formats with and without spaces.
+- `detect-gliner`: integration test gated behind a feature flag (needs the model) on synthetic sentences in DE and EN; tokenizer offset alignment tests.
+- `documents`: round-trip fixtures per format; entity straddling run boundaries in DOCX; replacement in header, footer, footnote, comment and table cell; untouched parts byte-compare where the format allows.
+- App: smoke test that settings serialize without content fields.
+
+All fixtures are synthetic (Max Mustermann, user@example.com, test IBANs).
