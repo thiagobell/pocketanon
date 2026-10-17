@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+pocketanon-core = { path = "crates/core" }
+pocketanon-detect-gliner = { path = "crates/detect-gliner" }
+pocketanon-detect-rules = { path = "crates/detect-rules" }
+pocketanon-documents = { path = "crates/documents" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+log = "0.4"
+regex = "1"
+unicode-segmentation = "1"
+proptest = "1"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
