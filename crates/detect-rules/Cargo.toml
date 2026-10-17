@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "PocketAnon Rule Detector: patterns and checksums for structured entity types"
 
 [dependencies]
 pocketanon-core = { workspace = true }
+regex = { workspace = true }
