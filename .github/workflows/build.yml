@@ -60,6 +60,7 @@ jobs:
           cp target/${{ matrix.target }}/release/pocketanon dist/pocketanon/
           cp README.md THIRD-PARTY-LICENSES.md assets/icon-256.png dist/pocketanon/
           tar -C dist -czf pocketanon-${{ matrix.name }}.tar.gz pocketanon
+          echo "ASSET=pocketanon-${{ matrix.name }}.tar.gz" >> "$GITHUB_ENV"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -69,6 +70,7 @@ jobs:
           Copy-Item target/${{ matrix.target }}/release/pocketanon.exe dist/pocketanon/
           Copy-Item README.md, THIRD-PARTY-LICENSES.md, assets/icon-256.png dist/pocketanon/
           Compress-Archive -Path dist/pocketanon -DestinationPath pocketanon-${{ matrix.name }}.zip
+          "ASSET=pocketanon-${{ matrix.name }}.zip" >> $env:GITHUB_ENV
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
@@ -76,14 +78,27 @@ jobs:
           CARGO_BUILD_TARGET: ${{ matrix.target }}
         run: |
           ./packaging/bundle.sh
-          cp THIRD-PARTY-LICENSES.md target/bundle/
-          # ditto keeps the bundle's attributes and symlinks; plain zip does not.
-          ditto -c -k --keepParent target/bundle/PocketAnon.app pocketanon-${{ matrix.name }}.zip
+          # A disk image keeps the bundle's attributes and symlinks, opens with a
+          # double-click and lets the user drag the app onto the Applications link.
+          mkdir -p dist/PocketAnon
+          cp -R target/bundle/PocketAnon.app dist/PocketAnon/
+          cp README.md THIRD-PARTY-LICENSES.md dist/PocketAnon/
+          ln -s /Applications dist/PocketAnon/Applications
+          dmg=pocketanon-${{ matrix.name }}.dmg
+          # hdiutil occasionally fails with "Resource busy" on hosted runners; retry.
+          for i in 1 2 3; do
+            hdiutil create -volname PocketAnon -srcfolder dist/PocketAnon -ov -format UDZO "$dmg" && break
+            sleep 5
+          done
+          test -f "$dmg"
+          echo "ASSET=$dmg" >> "$GITHUB_ENV"
 
-      - uses: actions/upload-artifact@v4
+      # archive: false uploads the package as-is, so downloads are not a zip around
+      # the zip/dmg/tar.gz. The artifact takes the file's name.
+      - uses: actions/upload-artifact@v7
         with:
-          name: pocketanon-${{ matrix.name }}
-          path: pocketanon-${{ matrix.name }}.*
+          path: ${{ env.ASSET }}
+          archive: false
           if-no-files-found: error
 
   release:
@@ -93,7 +108,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
