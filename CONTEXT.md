@@ -24,14 +24,11 @@ An **Entity Type** the user defines as free text at runtime, e.g. "project code 
 _Avoid_: Custom label, user label
 
 **Replacement Strategy**:
-The rule that decides what text replaces a detected **Entity**. The app currently knows two: **Redaction** and **Indexed Redaction**.
+The rule that decides what text replaces a detected **Entity**. The app uses exactly one, **Indexed Redaction**; plain redaction (`[PERSON]` without an index) was dropped on 2026-10-17 because it makes documents unreadable.
 _Avoid_: Mode, masking (which is a different, character-level strategy not currently supported)
 
-**Redaction**:
-A **Replacement Strategy** that replaces every **Entity** with a placeholder naming its **Entity Type** only, e.g. `[PERSON]`. Irreversible; distinct entities of the same type become indistinguishable.
-
 **Indexed Redaction**:
-The default **Replacement Strategy**. Replaces each **Entity** with a placeholder naming its **Entity Type** plus an index that is stable within one input, e.g. `[PERSON_1]`, `[PERSON_2]`. Two occurrences of the same entity text receive the same index. Irreversible.
+The only **Replacement Strategy**. Replaces each **Entity** with a placeholder naming its **Entity Type** plus an index that is stable within one input, e.g. `[PERSON_1]`, `[PERSON_2]`. Two occurrences of the same entity text receive the same index. Irreversible.
 _Avoid_: Pseudonymization (which substitutes realistic fake values and is out of scope)
 
 ## Detection
@@ -48,6 +45,14 @@ A score from 0 to 1 attached to a **Candidate**. Candidates below the user's **T
 
 **Threshold**:
 The minimum **Confidence** a **Candidate** needs to be shown. Adjustable live during **Review**.
+
+**Term Rule**:
+A user-defined rule: a literal term (matched case-insensitively, whole words) that is always an **Entity** of a given **Entity Type**, e.g. "FALKE" as *project code name*. Created from a right-click on selected text or in the **Legend**; fed to detection through the **Rule Detector** family. Term rules are settings the user authored, not content.
+_Avoid_: Custom rule, blacklist, dictionary entry
+
+**Legend**:
+The always-visible panel listing **Languages**, **Type Groups** with their colours, **Custom Types** and **Term Rules**, where all of them are switched on and off. The same panel serves **Text Anonymization** and **File Anonymization**.
+_Avoid_: Sidebar, settings (which is the separate drawer for model and appearance)
 
 **Merging**:
 The step that resolves overlapping **Candidates** from different **Detectors** into one. A **Rule Detector** candidate wins the span boundaries; the higher **Confidence** wins the **Entity Type**.

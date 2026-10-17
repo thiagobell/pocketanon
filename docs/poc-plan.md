@@ -6,13 +6,16 @@ Decisions from the planning session on 2026-10-17. Vocabulary is in [CONTEXT.md]
 
 - Text Anonymization and File Anonymization (TXT, DOCX, RTF). No PDF (ADR-0001).
 - Detection = Model Detector (GLiNER via `gline-rs` on ONNX Runtime, pure Rust) + Rule Detector (patterns and checksums), merged.
-- Replacement Strategies: Indexed Redaction (default), Redaction. No pseudonymization.
+- Replacement Strategy: Indexed Redaction only (plain redaction dropped by the user on 2026-10-17). No pseudonymization.
 - Review step with highlights, candidate list, threshold slider, type change, reject, manual span addition (Text workspace first).
 - Text Anonymization has no Detect or Apply buttons: detection starts one second after the last keystroke, and the Result follows every Review, Threshold or Strategy change. File Anonymization keeps explicit Detect and Apply & Save, because saving a file should be deliberate.
 - Document preview from Wordcraft layout and render crates (ADR-0002).
 - Default model: multilingual PII GLiNER, downloaded on first run into the app data dir; local-folder override. Languages are multi-select.
 - Settings persist, content never does (ADR-0003).
-- UI: egui/eframe, dark theme default, two workspaces (Text, File), settings drawer, Cmd+K command palette, styled after the ArtCraft apps.
+- UI: egui/eframe, dark theme default, two workspaces (Text, File), a permanent Legend panel (languages, type groups, custom types, term rules), a slim settings drawer (model, threshold, theme), Cmd+K options palette, styled after the ArtCraft apps.
+- File view: zoom (25–400 %, ⌘+/⌘−/⌘0), findings grouped by page with header/footer items tagged at the bottom of each page, every highlight labelled with its placeholder (`PERSON_1`), right-click menus on highlights and rows (change type, reject, always redact as …).
+- Term Rules: select text and right-click to always redact it as a chosen type; stored in settings (ADR-0003 amendment).
+- Packaging: `packaging/make-icons.sh` and `packaging/bundle.sh` produce `target/bundle/PocketAnon.app` with the masked-person icon.
 
 ## Workspace layout
 
