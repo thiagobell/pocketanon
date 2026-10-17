@@ -4,6 +4,22 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "PocketAnon Model Detector (GLiNER via gline-rs), model Registry and downloader"
 
 [dependencies]
 pocketanon-core = { workspace = true }
+gline-rs = { workspace = true }
+orp = { workspace = true }
+ort = { workspace = true }
+ureq = { workspace = true }
+directories = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[features]
+default = []
+coreml = ["gline-rs/coreml", "ort/coreml"]
+model-tests = []

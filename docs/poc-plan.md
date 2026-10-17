@@ -38,3 +38,11 @@ Decisions from the planning session on 2026-10-17. Vocabulary is in [CONTEXT.md]
 - App: smoke test that settings serialize without content fields.
 
 All fixtures are synthetic (Max Mustermann, user@example.com, test IBANs).
+
+## Findings during the build (2026-10-17)
+
+- **Model confidences are low with many labels.** With the int8 `gliner_multi_pii-v1` export and all 15 default types, "Max Mustermann" scores about 0.38; with only `person, location` it scores 0.68. Inference is fast (about 320 ms for a 140-word paragraph on an M3, CPU only). Consequences: the Review Threshold defaults to 0.3, and the app sends the Model Detector only the types the Rule Detector does not already cover with checksums or strict patterns (it withholds email, url, phone number, iban, credit card number). The fp16 variant still needs to be compared; it could not be downloaded because the machine's disk was full.
+- **GLiNER includes honorifics** ("Herr Max Mustermann"), so the same person can get two indices if written once with and once without the title. Acceptable for the PoC; a normalisation step that strips common honorifics before indexing is the fix.
+- **GLiNER counts punctuation as words**, so the chunker's whitespace word count underestimates; the Model Detector therefore declares a conservative 250-word limit instead of 384.
+- **Wordcraft RTF** drops footnotes and comments on import and writes no headers or footers (see ADR-0001).
+- **TXT bypasses Wordcraft** for file contents to keep exact line endings and encodings; Wordcraft only renders the preview.
