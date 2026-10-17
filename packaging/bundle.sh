@@ -4,10 +4,12 @@
 set -eu
 cd "$(dirname "$0")/.."
 cargo build -p pocketanon --release
+# With CARGO_BUILD_TARGET set (CI cross-builds), cargo puts the binary under target/<triple>/.
+bin="target/${CARGO_BUILD_TARGET:+$CARGO_BUILD_TARGET/}release/pocketanon"
 app=target/bundle/PocketAnon.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp target/release/pocketanon "$app/Contents/MacOS/PocketAnon"
+cp "$bin" "$app/Contents/MacOS/PocketAnon"
 cp assets/icon.icns "$app/Contents/Resources/PocketAnon.icns"
 version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 # Author from [workspace.package] authors (first entry, email stripped) for the copyright line.

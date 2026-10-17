@@ -1,0 +1,103 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: windows-aarch64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - name: macos-aarch64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: macos-x86_64
+            os: macos-latest # cross-compiled; Apple's SDK builds both architectures
+            target: x86_64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0 # keep in sync with rust-toolchain.toml
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # ort downloads the prebuilt static ONNX Runtime for the target at build time
+      # (ort-sys/dist.txt); nothing to install on the runner. macOS links the CoreML
+      # execution provider, the others use the CPU provider.
+      - name: Build
+        run: cargo build -p pocketanon --release --locked --target ${{ matrix.target }}
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist/pocketanon
+          cp target/${{ matrix.target }}/release/pocketanon dist/pocketanon/
+          cp README.md THIRD-PARTY-LICENSES.md assets/icon-256.png dist/pocketanon/
+          tar -C dist -czf pocketanon-${{ matrix.name }}.tar.gz pocketanon
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/pocketanon | Out-Null
+          Copy-Item target/${{ matrix.target }}/release/pocketanon.exe dist/pocketanon/
+          Copy-Item README.md, THIRD-PARTY-LICENSES.md, assets/icon-256.png dist/pocketanon/
+          Compress-Archive -Path dist/pocketanon -DestinationPath pocketanon-${{ matrix.name }}.zip
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          ./packaging/bundle.sh
+          cp THIRD-PARTY-LICENSES.md target/bundle/
+          # ditto keeps the bundle's attributes and symlinks; plain zip does not.
+          ditto -c -k --keepParent target/bundle/PocketAnon.app pocketanon-${{ matrix.name }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pocketanon-${{ matrix.name }}
+          path: pocketanon-${{ matrix.name }}.*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

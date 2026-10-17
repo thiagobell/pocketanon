@@ -7,8 +7,8 @@ version = "0.1.0"
 # Fill in: shown in `cargo metadata`, embedded in the binary (CARGO_PKG_AUTHORS) and copied into the
 # app bundle's copyright line by packaging/bundle.sh.
 authors = ["Thiago Bell <4528857+thiagobell@users.noreply.github.com>"]
-homepage = "https://example.com/pocketanon"
-repository = "https://example.com/pocketanon.git"
+homepage = "https://github.com/thiagobell/pocketanon"
+repository = "https://github.com/thiagobell/pocketanon"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
