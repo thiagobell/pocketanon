@@ -337,3 +337,76 @@ fn preview_renders_and_locates() {
     assert!(t.page_count() >= 1);
     assert!(!t.locate(t.segments()[0].id, Span::new(0, 3), 1.0).is_empty());
 }
+
+/// `locate` then `hit_test` the centre of the first rect: same segment, offset inside the span.
+fn assert_round_trip(d: &dyn AnonymizableDocument, kind: SegmentKind, needle: &str) {
+    let seg = d.segments().into_iter().find(|s| s.kind == kind && s.text.contains(needle)).unwrap_or_else(|| panic!("{needle:?} in {kind}"));
+    let at = seg.text.find(needle).unwrap();
+    let span = Span::new(at, at + needle.len());
+    for scale in [1.0f32, 1.5, 2.0] {
+        let placements = d.locate(seg.id, span, scale);
+        let p = placements.first().unwrap_or_else(|| panic!("{needle:?} not located at {scale}"));
+        let r = p.rects[0];
+        let hit = d.hit_test(p.page, r.x + r.w / 2.0, r.y + r.h / 2.0, scale).unwrap_or_else(|| panic!("no hit for {needle:?} at {scale}"));
+        assert_eq!(hit.segment, seg.id, "{needle:?} at {scale}");
+        assert!(hit.offset >= span.start && hit.offset <= span.end, "{needle:?} at {scale}: {} not in {span:?}", hit.offset);
+        assert!(seg.text.is_char_boundary(hit.offset));
+        // Sweep across the rect: every hit is on a char boundary and inside the span.
+        for i in 0..=20 {
+            let x = r.x + r.w * i as f32 / 20.0;
+            let h = d.hit_test(p.page, x, r.y + r.h / 2.0, scale).unwrap();
+            assert_eq!(h.segment, seg.id);
+            assert!(seg.text.is_char_boundary(h.offset), "{needle:?}: {} off a char boundary", h.offset);
+            assert!(h.offset >= span.start && h.offset <= span.end, "{needle:?} sweep {i}: {} not in {span:?}", h.offset);
+        }
+    }
+}
+
+fn assert_outside_is_none(d: &dyn AnonymizableDocument) {
+    let img = d.render_page(0, 2.0).unwrap();
+    let (w, h) = (img.width as f32, img.height as f32);
+    for (x, y) in [(-5.0, 10.0), (10.0, -5.0), (w + 10.0, 10.0), (10.0, h + 10.0)] {
+        assert_eq!(d.hit_test(0, x, y, 2.0), None, "({x}, {y}) is off the page");
+    }
+    assert_eq!(d.hit_test(d.page_count(), 10.0, 10.0, 2.0), None, "no such page");
+    assert_eq!(d.hit_test(0, f32::NAN, 10.0, 2.0), None);
+    assert_eq!(d.hit_test(0, 10.0, 10.0, 0.0), None);
+    // A corner of the page resolves to the nearest text, like an editor click, on a valid boundary.
+    let segs = d.segments();
+    for (x, y) in [(1.0, 1.0), (w - 1.0, h - 1.0), (w - 1.0, h / 2.0)] {
+        if let Some(hit) = d.hit_test(0, x, y, 2.0) {
+            let s = segs.iter().find(|s| s.id == hit.segment).expect("hit segment is a listed segment");
+            assert!(hit.offset <= s.text.len() && s.text.is_char_boundary(hit.offset));
+        }
+    }
+}
+
+#[test]
+fn hit_test_inverts_locate_docx() {
+    let bytes = wordcraft_docx::write(&fixture()).unwrap();
+    let d = load(&bytes, Format::Docx).unwrap();
+    assert_round_trip(d.as_ref(), SegmentKind::Body, NAME);
+    assert_round_trip(d.as_ref(), SegmentKind::Body, "Grüßen");
+    assert_round_trip(d.as_ref(), SegmentKind::Body, EMAIL); // table cell
+    assert_round_trip(d.as_ref(), SegmentKind::Header, NAME);
+    assert_round_trip(d.as_ref(), SegmentKind::Footer, EMAIL);
+    assert_round_trip(d.as_ref(), SegmentKind::Footnote, PHONE);
+    assert_outside_is_none(d.as_ref());
+
+    // A click in the left margin next to the greeting lands at the start of that line.
+    let seg = d.segments().into_iter().find(|s| s.text.starts_with("Sehr geehrter")).unwrap();
+    let r = d.locate(seg.id, Span::new(0, 4), 2.0)[0].rects[0];
+    let hit = d.hit_test(0, r.x / 2.0, r.y + r.h / 2.0, 2.0).unwrap();
+    assert_eq!((hit.segment, hit.offset), (seg.id, 0));
+}
+
+#[test]
+fn hit_test_inverts_locate_txt() {
+    let src = "Sehr geehrter Max Mustermann 👋,\r\n\r\nGrüße aus Köln – \u{FFFC} schreiben Sie an user@example.com.\r\n";
+    let d = load(src.as_bytes(), Format::Txt).unwrap();
+    assert_round_trip(d.as_ref(), SegmentKind::Body, NAME);
+    assert_round_trip(d.as_ref(), SegmentKind::Body, "Köln");
+    // After a U+FFFC the preview paragraph is 3 bytes shorter; the mapping undoes that.
+    assert_round_trip(d.as_ref(), SegmentKind::Body, EMAIL);
+    assert_outside_is_none(d.as_ref());
+}

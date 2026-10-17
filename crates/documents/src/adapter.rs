@@ -24,7 +24,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use pocketanon_core::document::{AnonymizableDocument, DocumentError, Format, PageImage, Placement, Rect, Segment, SegmentEdits, SegmentId, SegmentKind};
+use pocketanon_core::document::{AnonymizableDocument, DocumentError, Format, PageImage, Placement, Rect, Segment, SegmentEdits, SegmentId, SegmentKind, TextHit};
 use pocketanon_core::replace::{Replacement, apply_replacements};
 use pocketanon_core::types::Span;
 use wordcraft_doc::para::{COLUMN_BREAK, OBJ, PAGE_BREAK};
@@ -104,6 +104,37 @@ impl WordcraftDocument {
             Some(plain) => plain.lines.get(id.0).map(|l| off - l[..off.min(l.len())].matches(OBJ).count() * OBJ.len_utf8()).unwrap_or(off),
             None => off,
         }
+    }
+
+    /// The inverse of [`Self::para_offset`]: a preview paragraph offset as a segment offset,
+    /// floored onto a char boundary of the segment text.
+    fn segment_offset(&self, off: usize, text: &str) -> usize {
+        let mut off = match &self.plain {
+            Some(_) => {
+                // Walk the line; every U+FFFC it holds is absent from the preview paragraph.
+                let (mut seg, mut para) = (0, 0);
+                for c in text.chars() {
+                    if para >= off {
+                        break;
+                    }
+                    if c != OBJ {
+                        para += c.len_utf8();
+                    }
+                    seg += c.len_utf8();
+                }
+                seg
+            }
+            None => off,
+        }
+        .min(text.len());
+        while !text.is_char_boundary(off) {
+            off -= 1;
+        }
+        off
+    }
+
+    fn slot_of(&self, story: StoryRef, path: &Path) -> Option<SegmentId> {
+        self.locs.iter().position(|l| l.story == story && l.path == *path).map(SegmentId)
     }
 
     fn layout(&self) -> Arc<DocLayout> {
@@ -296,6 +327,35 @@ impl AnonymizableDocument for WordcraftDocument {
         let r = wordcraft_render::render_page(&self.doc, page, scale, &RenderOptions::default());
         // `Rendered` is premultiplied; the contract is straight RGBA8.
         Some(PageImage { width: r.width, height: r.height, rgba: r.to_straight() })
+    }
+
+    /// The text position under a point, like a click in an editor: a point in the header or
+    /// footer area hits that story, anywhere else on the page the story there (body, footnotes,
+    /// text boxes), resolved to the nearest line and the nearest offset on it, so margin and
+    /// between-paragraph clicks land on the closest text. `None` outside the page, for a
+    /// non-finite or non-positive scale, and when the nearest paragraph is not a segment (empty).
+    fn hit_test(&self, page: usize, x: f32, y: f32, scale: f32) -> Option<TextHit> {
+        if !(scale.is_finite() && scale > 0.0 && x.is_finite() && y.is_finite()) {
+            return None;
+        }
+        let (x, y) = (x / scale, y / scale);
+        let layout = self.layout();
+        let p = layout.pages.get(page)?;
+        if x < 0.0 || y < 0.0 || x > p.w || y > p.h {
+            return None;
+        }
+        let story = layout
+            .header_footer_at(page, y)
+            .map(|(s, _)| s)
+            .or_else(|| layout.story_at(page, x, y))
+            .unwrap_or(StoryRef::Body);
+        let pos = layout.hit(page, x, y, story).or_else(|| if story == StoryRef::Body { None } else { layout.hit(page, x, y, StoryRef::Body) })?;
+        let segment = self.slot_of(pos.story, &pos.path)?;
+        let text = self.text_of(segment).ok()?;
+        if text.trim().is_empty() {
+            return None;
+        }
+        Some(TextHit { segment, offset: self.segment_offset(pos.off, &text) })
     }
 
     fn locate(&self, segment: SegmentId, span: Span, scale: f32) -> Vec<Placement> {
