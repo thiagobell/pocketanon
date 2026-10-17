@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- PocketAnon: a masked person. Background follows the app's dark theme, mask uses the accent. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2a2d3e"/>
+      <stop offset="1" stop-color="#15161e"/>
+    </linearGradient>
+    <linearGradient id="mask" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#9d8cff"/>
+      <stop offset="1" stop-color="#6c5ce7"/>
+    </linearGradient>
+    <linearGradient id="skin" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f1f1f7"/>
+      <stop offset="1" stop-color="#c9cad8"/>
+    </linearGradient>
+    <clipPath id="square">
+      <rect x="0" y="0" width="1024" height="1024" rx="228"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#square)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <!-- soft accent glow behind the figure -->
+    <circle cx="512" cy="560" r="420" fill="#6c5ce7" opacity="0.10"/>
+    <!-- shoulders -->
+    <path d="M160 1024 C160 800 300 700 512 700 C724 700 864 800 864 1024 Z" fill="url(#skin)"/>
+    <!-- neck -->
+    <rect x="440" y="600" width="144" height="150" rx="40" fill="#d9dae6"/>
+    <!-- head -->
+    <circle cx="512" cy="420" r="230" fill="url(#skin)"/>
+    <!-- domino mask -->
+    <path d="M250 392
+             C300 330 400 318 512 346
+             C624 318 724 330 774 392
+             C790 470 740 540 660 548
+             C600 554 548 520 512 470
+             C476 520 424 554 364 548
+             C284 540 234 470 250 392 Z"
+          fill="url(#mask)"/>
+    <!-- eye holes -->
+    <ellipse cx="410" cy="440" rx="54" ry="34" fill="#15161e"/>
+    <ellipse cx="614" cy="440" rx="54" ry="34" fill="#15161e"/>
+    <!-- mask ribbon ends -->
+    <path d="M250 392 L170 352 L198 430 Z" fill="#6c5ce7"/>
+    <path d="M774 392 L854 352 L826 430 Z" fill="#6c5ce7"/>
+    <!-- subtle highlight on the mask -->
+    <path d="M300 372 C380 338 450 340 512 362 C574 340 644 338 724 372" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="14" stroke-linecap="round"/>
+  </g>
+</svg>
