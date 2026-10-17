@@ -1,5 +1,7 @@
 //! Text Anonymization: input, Review, Result.
 
+use std::time::Instant;
+
 use egui::{FontId, Layout, Margin, RichText, ScrollArea, TextEdit, Ui};
 use pocketanon_core::{Review, SegmentId, SegmentKind};
 
@@ -7,7 +9,7 @@ use crate::app::PocketAnon;
 use crate::review_ui::{self, SegmentReview};
 use crate::text_util::{selection_span, trim_span};
 use crate::theme::{Tokens, type_color};
-use crate::widgets::{caption, card, card_header, chip, ghost_button, primary_button};
+use crate::widgets::{caption, card, card_header, chip, ghost_button};
 
 const REVIEW_WIDTH: f32 = 360.0;
 
@@ -32,59 +34,49 @@ fn input_card(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
     let h = ui.available_height();
     card(tk).show(ui, |ui| {
         ui.set_min_size(egui::vec2(ui.available_width(), h - 26.0));
-        let reviewing = app.text.reviews.is_some();
+        let current = app.text.review_current();
+        let working = app.text.detecting.is_some() || app.text.dirty;
         card_header(ui, tk, "Input", |ui| {
-            if reviewing {
-                if ghost_button(ui, tk, "✏  Edit text", true).on_hover_text("Back to editing; clears the Review").clicked() {
-                    app.text.reviews = None;
-                    app.text.output.clear();
-                    app.text.summary = None;
-                    app.text.selection = None;
-                }
+            let n = app.text.input.chars().count();
+            ui.label(RichText::new(format!("{n} characters")).size(11.5).color(tk.text_faint));
+            if working && n > 0 {
+                chip(ui, "Analyzing…", tk.text_faint, tk.dark);
+            } else if current {
                 chip(ui, "Review", tk.accent, tk.dark);
-            } else {
-                let n = app.text.input.chars().count();
-                ui.label(RichText::new(format!("{n} characters")).size(11.5).color(tk.text_faint));
             }
         });
         ui.add_space(6.0);
         let avail = ui.available_size();
         ScrollArea::vertical().id_salt("input_scroll").max_height(avail.y - 44.0).auto_shrink([false, false]).show(ui, |ui| {
-            let out = if let Some(reviews) = &app.text.reviews {
-                // Review mode: the same text, read-only, with highlighted Candidates. Selection
-                // still works, for adding Entities by hand.
-                let seg = &reviews[0];
-                let hovered = app.hovered;
-                let catalog = &app.catalog;
-                let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
-                    let job = review_ui::highlight_job(buf.as_str(), Some(&seg.review), seg.id, hovered, catalog, tk, editor_font(), wrap);
-                    ui.fonts_mut(|f| f.layout_job(job))
-                };
-                let mut text: &str = &seg.text;
-                TextEdit::multiline(&mut text)
-                    .id_salt("input_review")
-                    .frame(egui::Frame::NONE)
-                    .margin(Margin::same(4))
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(16)
-                    .layouter(&mut layouter)
-                    .show(ui)
-            } else {
-                TextEdit::multiline(&mut app.text.input)
-                    .id_salt("input_editor")
-                    .hint_text("Paste or type text with personal information…\n\nExample: Sehr geehrter Herr Max Mustermann, bitte senden Sie die Unterlagen an max.mustermann@example.com.")
-                    .font(editor_font())
-                    .frame(egui::Frame::NONE)
-                    .margin(Margin::same(4))
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(16)
-                    .show(ui)
+            // The editor stays editable at all times. While the Review matches the text, the
+            // layouter paints Candidate highlights; after an edit they vanish until detection
+            // catches up (a second after the last keystroke).
+            let hovered = app.hovered;
+            let catalog = &app.catalog;
+            let text = &mut app.text;
+            let review = if current { text.reviews.as_ref().map(|r| &r[0].review) } else { None };
+            let seg_id = SegmentId(0);
+            let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+                let job = review_ui::highlight_job(buf.as_str(), review, seg_id, hovered, catalog, tk, editor_font(), wrap);
+                ui.fonts_mut(|f| f.layout_job(job))
             };
-            let text = app.text.reviews.as_ref().map_or(app.text.input.as_str(), |r| r[0].text.as_str());
+            let out = TextEdit::multiline(&mut text.input)
+                .id_salt("input_editor")
+                .hint_text("Paste or type text with personal information…\n\nExample: Sehr geehrter Herr Max Mustermann, bitte senden Sie die Unterlagen an max.mustermann@example.com.")
+                .font(editor_font())
+                .frame(egui::Frame::NONE)
+                .margin(Margin::same(4))
+                .desired_width(f32::INFINITY)
+                .desired_rows(16)
+                .layouter(&mut layouter)
+                .show(ui);
+            if out.response.changed() {
+                text.edited(Instant::now());
+            }
             if let Some(cr) = out.cursor_range {
-                let sel = selection_span(text, cr.primary.index.0, cr.secondary.index.0).and_then(|s| trim_span(text, s));
+                let sel = selection_span(&text.input, cr.primary.index.0, cr.secondary.index.0).and_then(|s| trim_span(&text.input, s));
                 if sel.is_some() || out.response.has_focus() {
-                    app.text.selection = sel;
+                    text.selection = sel;
                 }
             }
         });
@@ -97,15 +89,14 @@ fn input_card(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
 fn manual_add_row(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
     let types = app.settings.all_types(&app.catalog);
     ui.horizontal(|ui| {
-        let sel = app.text.selection;
+        // Manual additions need a Review that matches the text on screen.
+        let sel = app.text.selection.filter(|s| s.is_valid_in(&app.text.input));
         let label = match sel {
-            Some(s) => {
-                let text = app.text.reviews.as_ref().map_or(app.text.input.as_str(), |r| r[0].text.as_str());
-                format!("Add “{}” as", crate::text_util::preview(&text[s.range()], 18))
-            }
+            Some(s) => format!("Add “{}” as", crate::text_util::preview(&app.text.input[s.range()], 18)),
             None => "Select text to add it as".to_string(),
         };
-        let clicked = ghost_button(ui, tk, &format!("+ {label}"), sel.is_some()).clicked();
+        let can_add = sel.is_some() && !app.text.dirty && app.text.detecting.is_none();
+        let clicked = ghost_button(ui, tk, &format!("+ {label}"), can_add).clicked();
         let c = type_color(&app.catalog, &app.text.manual_type);
         egui::ComboBox::from_id_salt("manual_type")
             .selected_text(RichText::new(app.text.manual_type.as_str()).color(c))
@@ -127,10 +118,9 @@ fn manual_add_row(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
                 }]
             });
             let seg = &mut reviews[0];
-            if seg.review.add_manual(&seg.text, span, app.text.manual_type.clone()).is_some() {
+            if seg.text == app.text.input && seg.review.add_manual(&seg.text, span, app.text.manual_type.clone()).is_some() {
                 app.text.selection = None;
-                app.text.output.clear();
-                app.text.summary = None;
+                app.text.output_stale = true;
             }
         }
     });
@@ -152,8 +142,8 @@ fn review_card(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
                 empty_state(
                     ui,
                     tk,
-                    if app.text.detecting.is_some() { "Detecting…" } else { "No Review yet" },
-                    "Run Detect to see Candidates here. Accept, reject or retype each one, then Apply.",
+                    if app.text.detecting.is_some() || app.text.dirty { "Analyzing…" } else { "No Review yet" },
+                    "Candidates appear here by themselves, a second after you stop typing. Accept, reject or retype each one; the Result follows.",
                 );
             }
             Some(reviews) => {
@@ -171,8 +161,7 @@ fn review_card(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
             }
         }
         if changed {
-            app.text.output.clear();
-            app.text.summary = None;
+            app.text.output_stale = true;
         }
         app.hovered = hovered;
         if let Some(s) = &app.text.summary {
@@ -223,12 +212,12 @@ fn result_card(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
     card(tk).show(ui, |ui| {
         ui.set_min_size(egui::vec2(ui.available_width(), h - 26.0));
         let has = !app.text.output.is_empty();
+        let pending = has && (app.text.dirty || app.text.detecting.is_some());
         let mut copy = false;
-        let mut apply = false;
         card_header(ui, tk, "Result", |ui| {
             copy = ghost_button(ui, tk, "Copy", has).on_hover_text("Copy the Result to the clipboard").clicked();
-            if !has {
-                apply = primary_button(ui, tk, "Apply", app.text.reviews.is_some()).clicked();
+            if pending {
+                ui.label(RichText::new("updating…").size(11.5).color(tk.text_faint));
             }
         });
         ui.add_space(6.0);
@@ -249,14 +238,11 @@ fn result_card(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
                 ui,
                 tk,
                 "No Result yet",
-                &format!("Apply replaces every accepted Entity using {}.", crate::app::strategy_label(app.settings.strategy)),
+                &format!("The anonymized text appears here by itself, using {}.", crate::app::strategy_label(app.settings.strategy)),
             );
         }
         if copy {
             app.copy_result(&ctx);
-        }
-        if apply {
-            app.apply_text();
         }
     });
 }

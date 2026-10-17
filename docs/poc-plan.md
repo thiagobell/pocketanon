@@ -8,6 +8,7 @@ Decisions from the planning session on 2026-10-17. Vocabulary is in [CONTEXT.md]
 - Detection = Model Detector (GLiNER via `gline-rs` on ONNX Runtime, pure Rust) + Rule Detector (patterns and checksums), merged.
 - Replacement Strategies: Indexed Redaction (default), Redaction. No pseudonymization.
 - Review step with highlights, candidate list, threshold slider, type change, reject, manual span addition (Text workspace first).
+- Text Anonymization has no Detect or Apply buttons: detection starts one second after the last keystroke, and the Result follows every Review, Threshold or Strategy change. File Anonymization keeps explicit Detect and Apply & Save, because saving a file should be deliberate.
 - Document preview from Wordcraft layout and render crates (ADR-0002).
 - Default model: multilingual PII GLiNER, downloaded on first run into the app data dir; local-folder override. Languages are multi-select.
 - Settings persist, content never does (ADR-0003).

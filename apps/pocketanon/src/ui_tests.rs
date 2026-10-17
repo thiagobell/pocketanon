@@ -29,8 +29,10 @@ fn wait(h: &mut Harness<'_, PocketAnon>) {
     panic!("background job did not finish");
 }
 
+/// Typing is enough: detection starts after the debounce and the Result follows the Review.
 #[test]
-fn type_detect_and_apply() {
+fn typing_detects_and_applies_by_itself() {
+    use std::time::{Duration, Instant};
     let mut h = Harness::builder().with_size(egui::vec2(1360.0, 840.0)).build_ui_state(|ui, app: &mut PocketAnon| app.show(ui), app());
     wait(&mut h); // model load
     h.get_by_role(egui::accesskit::Role::MultilineTextInput).focus();
@@ -38,18 +40,55 @@ fn type_detect_and_apply() {
     h.get_by_role(egui::accesskit::Role::MultilineTextInput).type_text("Please call Max Mustermann at max@example.com today.");
     h.run_steps(2);
     assert!(h.state().text.input.contains("Mustermann"));
-    h.get_by_role_and_label(egui::accesskit::Role::Button, "🔍  Detect").click();
+    // Within the debounce nothing runs.
+    assert!(h.state().text.dirty);
+    assert!(h.state().text.detecting.is_none());
+    assert!(h.state().text.reviews.is_none());
+    // Pretend the last keystroke was long enough ago.
+    h.state_mut().text.last_edit = Some(Instant::now() - Duration::from_secs(2));
     h.run_steps(1);
+    assert!(h.state().text.detecting.is_some(), "detection should start after the debounce");
     wait(&mut h);
     let reviews = h.state().text.reviews.as_ref().expect("review present");
-    let ents = reviews[0].review.entities();
-    assert_eq!(ents.len(), 2, "{ents:?}");
-    // The candidate row shows up in the review list.
+    assert_eq!(reviews[0].review.entities().len(), 2);
     assert!(h.query_all_by_label_contains("Max Mustermann").next().is_some());
-    h.get_all_by_label("Apply").next().expect("Apply button").click();
-    h.run_steps(2);
     assert_eq!(h.state().text.output, "Please call [PERSON_1] at [EMAIL_1] today.");
     assert_eq!(h.state().text.summary.as_ref().unwrap().total(), 2);
+
+    // Rejecting a Candidate updates the Result without any button.
+    let id = h.state().text.reviews.as_ref().unwrap()[0].review.items()[0].id;
+    h.state_mut().text.reviews.as_mut().unwrap()[0].review.set_accepted(id, false);
+    h.state_mut().text.output_stale = true;
+    h.run_steps(1);
+    assert_eq!(h.state().text.output, "Please call Max Mustermann at [EMAIL_1] today.");
+
+    // Editing again hides the stale highlights and re-arms the debounce.
+    // The Result pane is a read-only multiline widget too; the editor comes first.
+    h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).next().unwrap().type_text(" Thanks.");
+    h.run_steps(1);
+    assert!(h.state().text.dirty);
+    assert!(!h.state().text.review_current());
+    h.state_mut().text.last_edit = Some(Instant::now() - Duration::from_secs(2));
+    h.run_steps(1);
+    wait(&mut h);
+    assert!(h.state().text.review_current());
+    assert_eq!(h.state().text.output, "Please call [PERSON_1] at [EMAIL_1] today. Thanks.");
+}
+
+/// A detection result is bound to the text it was started on, not to whatever is in the editor
+/// when it completes.
+#[test]
+fn late_result_binds_to_its_snapshot() {
+    let mut h = Harness::builder().with_size(egui::vec2(1360.0, 840.0)).build_ui_state(|ui, app: &mut PocketAnon| app.show(ui), app());
+    wait(&mut h);
+    h.state_mut().text.input = "Max Mustermann".into();
+    h.state_mut().detect_text();
+    h.state_mut().text.input = "XX".into(); // user keeps typing while the job runs
+    h.run_steps(1);
+    wait(&mut h);
+    let r = h.state().text.reviews.as_ref().unwrap();
+    assert_eq!(r[0].text, "Max Mustermann");
+    assert!(!h.state().text.review_current());
 }
 
 /// Renders the main screens to PNGs when `POCKETANON_SCREENSHOTS=<dir>` is set (GPU via wgpu).
@@ -76,8 +115,6 @@ Herr Max Mustermann aus Berlin meldet sich nächste Woche.\n\nBitte überweisen 
     h.run_steps(1);
     wait(&mut h);
     shot(&mut h, "02-text-review.png");
-    h.state_mut().apply_text();
-    shot(&mut h, "03-text-result.png");
     h.state_mut().settings_open = true;
     shot(&mut h, "04-settings.png");
     h.state_mut().settings_open = false;

@@ -58,12 +58,25 @@ pub struct ModelState {
     pub downloads: HashMap<String, DownloadProgress>,
 }
 
+/// How long the input must be left alone before detection runs on it.
+pub const AUTO_DETECT_DEBOUNCE: Duration = Duration::from_secs(1);
+
 pub struct TextWs {
     pub input: String,
     pub reviews: Option<Vec<SegmentReview>>,
     pub output: String,
     pub summary: Option<Summary>,
     pub detecting: Option<u64>,
+    /// The exact text the running detection was started on; Candidates refer to it.
+    pub snapshot: Option<String>,
+    /// Time of the last keystroke; drives the debounce.
+    pub last_edit: Option<Instant>,
+    /// Input changed since the last detection was started.
+    pub dirty: bool,
+    /// Review or settings changed since the Result was computed.
+    pub output_stale: bool,
+    /// Strategy the current Result was computed with.
+    pub output_strategy: Option<Strategy>,
     /// Last non-empty selection in the input, as a byte span.
     pub selection: Option<Span>,
     pub manual_type: EntityType,
@@ -77,8 +90,33 @@ impl Default for TextWs {
             output: String::new(),
             summary: None,
             detecting: None,
+            snapshot: None,
+            last_edit: None,
+            dirty: false,
+            output_stale: false,
+            output_strategy: None,
             selection: None,
             manual_type: EntityType::new("person"),
+        }
+    }
+}
+
+impl TextWs {
+    /// The Review matches the text on screen (Candidate offsets are valid for `input`).
+    pub fn review_current(&self) -> bool {
+        self.reviews.as_ref().is_some_and(|r| r[0].text == self.input)
+    }
+
+    /// Called by the editor on every change.
+    pub fn edited(&mut self, now: Instant) {
+        self.last_edit = Some(now);
+        self.dirty = true;
+        if self.input.trim().is_empty() {
+            self.reviews = None;
+            self.output.clear();
+            self.summary = None;
+            self.selection = None;
+            self.dirty = false;
         }
     }
 }
@@ -345,17 +383,35 @@ impl PocketAnon {
     }
 
     pub fn detect_text(&mut self) {
+        self.text.dirty = false;
         if self.text.input.trim().is_empty() {
-            self.toasts.info("Type or paste some text first.");
             return;
         }
         let Some(detectors) = self.ready_detectors() else { return };
         let ticket = self.ticket();
         self.text.detecting = Some(ticket);
-        self.text.summary = None;
-        self.text.output.clear();
+        self.text.snapshot = Some(self.text.input.clone());
         let config = self.pipeline_config();
         self.jobs.detect(Target::Text, ticket, detectors, config, vec![(SegmentId(0), self.text.input.clone())]);
+    }
+
+    /// Text Anonymization runs by itself: once the input has rested for
+    /// [`AUTO_DETECT_DEBOUNCE`] a detection starts, and the Result follows every change to the
+    /// Review or the Replacement Strategy. Returns how long until the next check, if one is due.
+    pub fn auto_tick(&mut self, now: Instant) -> Option<Duration> {
+        let mut wake = None;
+        if self.text.dirty && self.text.detecting.is_none() {
+            match self.text.last_edit {
+                Some(t) if now.duration_since(t) >= AUTO_DETECT_DEBOUNCE => self.detect_text(),
+                Some(t) => wake = Some(AUTO_DETECT_DEBOUNCE - now.duration_since(t)),
+                None => self.detect_text(),
+            }
+        }
+        let strategy_changed = self.text.output_strategy.is_some_and(|s| s != self.settings.strategy);
+        if self.text.reviews.is_some() && (self.text.output_stale || strategy_changed) {
+            self.apply_text();
+        }
+        wake
     }
 
     pub fn detect_file(&mut self) {
@@ -375,15 +431,14 @@ impl PocketAnon {
 
     /// Text Anonymization: apply the Replacement Strategy to the accepted Entities.
     pub fn apply_text(&mut self) {
-        let Some(reviews) = &self.text.reviews else {
-            self.toasts.info("Run detection first.");
-            return;
-        };
+        let Some(reviews) = &self.text.reviews else { return };
         let (plan, summary) = plan_all(reviews, self.settings.strategy);
         let seg = &reviews[0];
         let reps = plan.into_iter().find(|(id, _)| *id == seg.id).map(|(_, r)| r).unwrap_or_default();
         self.text.output = pocketanon_core::apply_replacements(&seg.text, &reps);
         self.text.summary = Some(summary);
+        self.text.output_stale = false;
+        self.text.output_strategy = Some(self.settings.strategy);
     }
 
     pub fn copy_result(&mut self, ctx: &egui::Context) {
@@ -492,7 +547,10 @@ impl PocketAnon {
                 }
                 *pending = None;
                 let segments: Vec<(SegmentId, SegmentKind, String)> = match target {
-                    Target::Text => vec![(SegmentId(0), SegmentKind::Body, self.text.input.clone())],
+                    Target::Text => {
+                        let text = self.text.snapshot.take().unwrap_or_else(|| self.text.input.clone());
+                        vec![(SegmentId(0), SegmentKind::Body, text)]
+                    }
                     Target::File => self.file.segments.iter().map(|s| (s.id, s.kind, s.text.clone())).collect(),
                 };
                 match result {
@@ -510,11 +568,16 @@ impl PocketAnon {
                             .collect();
                         let n: usize = reviews.iter().map(|r| r.review.items().len()).sum();
                         match target {
-                            Target::Text => self.text.reviews = Some(reviews),
-                            Target::File => self.file.reviews = Some(reviews),
-                        }
-                        if n == 0 {
-                            self.toasts.info("No Candidates found.");
+                            Target::Text => {
+                                self.text.reviews = Some(reviews);
+                                self.text.output_stale = true;
+                            }
+                            Target::File => {
+                                self.file.reviews = Some(reviews);
+                                if n == 0 {
+                                    self.toasts.info("No Candidates found.");
+                                }
+                            }
                         }
                         if target == Target::File {
                             self.request_placements();
@@ -632,6 +695,7 @@ impl PocketAnon {
         self.settings.threshold = t;
         if let Some(r) = &mut self.text.reviews {
             set_threshold(r, t);
+            self.text.output_stale = true;
         }
         if let Some(r) = &mut self.file.reviews {
             set_threshold(r, t);
@@ -692,6 +756,9 @@ impl PocketAnon {
         }
         if self.jobs.busy() {
             ctx.request_repaint_after(Duration::from_millis(100));
+        }
+        if let Some(wake) = self.auto_tick(Instant::now()) {
+            ctx.request_repaint_after(wake);
         }
         self.shortcuts(&ctx);
 
@@ -794,26 +861,21 @@ impl PocketAnon {
                             self.palette.toggle();
                         }
                         ui.add_space(6.0);
-                        let (apply_label, can_apply) = match self.workspace {
-                            Workspace::Text => ("Apply", self.text.reviews.is_some()),
-                            Workspace::File => ("Apply & Save…", self.file.reviews.is_some() && !self.file.saving),
-                        };
-                        if crate::widgets::primary_button(ui, tk, apply_label, can_apply).on_hover_text("⌘ Shift ↩").clicked() {
-                            self.run_action(&ctx, Action::Apply);
-                        }
                         let detecting = match self.workspace {
                             Workspace::Text => self.text.detecting.is_some(),
                             Workspace::File => self.file.detecting.is_some(),
                         };
-                        let can_detect = !detecting
-                            && match self.workspace {
-                                Workspace::Text => !self.text.input.trim().is_empty(),
-                                Workspace::File => self.file.doc.is_some(),
-                            };
-                        if crate::widgets::ghost_button(ui, tk, "🔍  Detect", can_detect).on_hover_text("⌘↩").clicked() {
-                            self.detect();
+                        if self.workspace == Workspace::File {
+                            let can_apply = self.file.reviews.is_some() && !self.file.saving;
+                            if crate::widgets::primary_button(ui, tk, "Apply & Save…", can_apply).on_hover_text("⌘ Shift ↩").clicked() {
+                                self.run_action(&ctx, Action::Apply);
+                            }
+                            let can_detect = !detecting && self.file.doc.is_some();
+                            if crate::widgets::ghost_button(ui, tk, "🔍  Detect", can_detect).on_hover_text("⌘↩").clicked() {
+                                self.detect();
+                            }
+                            ui.add_space(8.0);
                         }
-                        ui.add_space(8.0);
                         let status = if detecting {
                             Some("Detecting…")
                         } else if self.model.loading {
