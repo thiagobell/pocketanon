@@ -10,6 +10,10 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/pocketanon "$app/Contents/MacOS/PocketAnon"
 cp assets/icon.icns "$app/Contents/Resources/PocketAnon.icns"
 version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+# Author from [workspace.package] authors (first entry, email stripped) for the copyright line.
+author=$(cargo metadata --no-deps --format-version 1 \
+  | python3 -c 'import json,sys,re; m=json.load(sys.stdin); p=[x for x in m["packages"] if x["name"]=="pocketanon"][0]; a=(p.get("authors") or ["Unknown"])[0]; print(re.sub(r"\s*<[^>]*>","",a))')
+year=$(date +%Y)
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -25,6 +29,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSHumanReadableCopyright</key><string>© $year $author. MIT OR Apache-2.0.</string>
   <key>CFBundleDocumentTypes</key>
   <array>
     <dict>

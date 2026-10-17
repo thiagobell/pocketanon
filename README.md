@@ -56,6 +56,8 @@ Vocabulary used across code and docs is defined in [`CONTEXT.md`](CONTEXT.md).
 
 Built with [egui](https://github.com/emilk/egui), [gline-rs](https://github.com/fbilhaut/gline-rs), [ONNX Runtime](https://onnxruntime.ai) via [ort](https://github.com/pykeio/ort), and the Wordcraft document crates. The look follows the [ArtCraft](https://getartcraft.com) apps.
 
-## License
+## Author and license
+
+Author: see `authors` in `Cargo.toml` (also embedded in the binary and the app bundle).
 
 MIT OR Apache-2.0.

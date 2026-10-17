@@ -4,7 +4,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
 description = "PocketAnon desktop app (eframe/egui)"
+build = "build.rs"
 
 [[bin]]
 name = "pocketanon"
@@ -25,6 +29,11 @@ serde_json = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 image = { workspace = true }
+
+# macOS builds use the CoreML execution provider (Apple Neural Engine / GPU); other
+# platforms run ONNX Runtime on the CPU provider.
+[target.'cfg(target_os = "macos")'.dependencies]
+pocketanon-detect-gliner = { workspace = true, features = ["coreml"] }
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["wgpu"] }
