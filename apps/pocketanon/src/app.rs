@@ -914,8 +914,8 @@ impl PocketAnon {
                             self.settings_open = !self.settings_open;
                         }
                         ui.add_space(4.0);
-                        if rail_button(ui, tk, "☰", "Legend", self.settings.legend_open)
-                            .on_hover_text("Legend: Languages, Entity Types, Term Rules  ⌘L")
+                        if rail_button(ui, tk, "☰", "Detection", self.settings.legend_open)
+                            .on_hover_text("What to detect: languages, entity types, term rules  ⌘L")
                             .clicked()
                         {
                             self.settings.legend_open = !self.settings.legend_open;

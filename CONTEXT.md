@@ -47,12 +47,12 @@ A score from 0 to 1 attached to a **Candidate**. Candidates below the user's **T
 The minimum **Confidence** a **Candidate** needs to be shown. Adjustable live during **Review**.
 
 **Term Rule**:
-A user-defined rule: a literal term (matched case-insensitively, whole words) that is always an **Entity** of a given **Entity Type**, e.g. "FALKE" as *project code name*. Created from a right-click on selected text or in the **Legend**; fed to detection through the **Rule Detector** family. Term rules are settings the user authored, not content.
+A user-defined rule: a literal term (matched case-insensitively, whole words) that is always an **Entity** of a given **Entity Type**, e.g. "FALKE" as *project code name*. Created from a right-click on selected text or in the **Detection Panel**; fed to detection through the **Rule Detector** family. Term rules are settings the user authored, not content.
 _Avoid_: Custom rule, blacklist, dictionary entry
 
-**Legend**:
+**Detection Panel**:
 The always-visible panel listing **Languages**, **Type Groups** with their colours, **Custom Types** and **Term Rules**, where all of them are switched on and off. The same panel serves **Text Anonymization** and **File Anonymization**.
-_Avoid_: Sidebar, settings (which is the separate drawer for model and appearance)
+_Avoid_: Legend, sidebar, settings (which is the separate drawer for model and appearance)
 
 **Merging**:
 The step that resolves overlapping **Candidates** from different **Detectors** into one. A **Rule Detector** candidate wins the span boundaries; the higher **Confidence** wins the **Entity Type**.

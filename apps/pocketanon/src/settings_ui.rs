@@ -28,7 +28,7 @@ pub fn drawer(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
                 if ui.add(egui::Slider::new(&mut t, 0.0..=1.0).step_by(0.01).fixed_decimals(2)).changed() {
                     app.set_threshold(t);
                 }
-                ui.label(RichText::new("Candidates below this Confidence are hidden from Review. Entity Types, Languages and Term Rules live in the Legend.").size(11.5).color(tk.text_faint));
+                ui.label(RichText::new("Candidates below this Confidence are hidden from Review. Entity Types, Languages and Term Rules live in the Detection panel.").size(11.5).color(tk.text_faint));
             });
             section(ui, tk, "Appearance", |ui| {
                 let mut t = app.settings.theme;

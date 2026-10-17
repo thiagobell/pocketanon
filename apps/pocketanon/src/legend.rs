@@ -15,9 +15,9 @@ pub fn panel(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
     let mut changed = false;
     egui::Frame::new().inner_margin(Margin::symmetric(14, 12)).show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Legend").size(15.0).strong().color(tk.text));
+            ui.label(RichText::new("What to detect").size(15.0).strong().color(tk.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("🗙").on_hover_text("Hide the Legend  ⌘L").clicked() {
+                if ui.small_button("🗙").on_hover_text("Hide this panel  ⌘L").clicked() {
                     app.settings.legend_open = false;
                     app.settings_changed();
                 }

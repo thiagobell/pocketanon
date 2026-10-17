@@ -12,7 +12,7 @@ Decisions from the planning session on 2026-10-17. Vocabulary is in [CONTEXT.md]
 - Document preview from Wordcraft layout and render crates (ADR-0002).
 - Default model: multilingual PII GLiNER, downloaded on first run into the app data dir; local-folder override. Languages are multi-select.
 - Settings persist, content never does (ADR-0003).
-- UI: egui/eframe, dark theme default, two workspaces (Text, File), a permanent Legend panel (languages, type groups, custom types, term rules), a slim settings drawer (model, threshold, theme), Cmd+K options palette, styled after the ArtCraft apps.
+- UI: egui/eframe, dark theme default, two workspaces (Text, File), a permanent Detection panel titled "What to detect" (languages, type groups, custom types, term rules), a slim settings drawer (model, threshold, theme), Cmd+K options palette, styled after the ArtCraft apps.
 - File view: zoom (25–400 %, ⌘+/⌘−/⌘0), findings grouped by page with header/footer items tagged at the bottom of each page, every highlight labelled with its placeholder (`PERSON_1`), right-click menus on highlights and rows (change type, reject, always redact as …).
 - Term Rules: select text and right-click to always redact it as a chosen type; stored in settings (ADR-0003 amendment).
 - Packaging: `packaging/make-icons.sh` and `packaging/bundle.sh` produce `target/bundle/PocketAnon.app` with the masked-person icon.

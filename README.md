@@ -11,7 +11,7 @@
 - **Detection** combines a zero-shot NER model ([GLiNER](https://github.com/urchade/GLiNER), multilingual PII variant, run on ONNX Runtime) with pattern rules and checksums for structured data such as IBANs, card numbers, phone numbers, emails and tax IDs. German and English are the defaults; more languages can be enabled.
 - **Review before anything changes**: adjust the confidence threshold, reject or retype a finding, or select text and right-click to make it a permanent redaction rule.
 - **Indexed placeholders**: the same person is always `[PERSON_1]`, the next one `[PERSON_2]`, so the result stays readable. There is no way to reverse it; the mapping is never written anywhere.
-- **Legend panel**: languages, entity types with their colours, custom types and your own term rules, all switchable in place.
+- **Detection panel**: languages, entity types with their colours, custom types and your own term rules, all switchable in place.
 - **Privacy by construction**: settings are persisted, content never is. No recent files, no history, no mapping export.
 
 ## Status
