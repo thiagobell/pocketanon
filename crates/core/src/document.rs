@@ -175,6 +175,22 @@ pub trait AnonymizableDocument: Send {
     fn locate(&self, _segment: SegmentId, _span: Span, _scale: f32) -> Vec<Placement> {
         Vec::new()
     }
+
+    /// The text position under a point on a rendered page (page pixels at `scale`, origin
+    /// top-left): the segment and a byte offset into its text, on a char boundary. `None` when
+    /// the point is not over analysable text or the format has no pages. Together with
+    /// [`AnonymizableDocument::locate`] this lets a UI select text on rendered pages.
+    fn hit_test(&self, _page: usize, _x: f32, _y: f32, _scale: f32) -> Option<TextHit> {
+        None
+    }
+}
+
+/// A text position under a point on a page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextHit {
+    pub segment: SegmentId,
+    /// Byte offset into that segment's text, on a char boundary.
+    pub offset: usize,
 }
 
 #[cfg(test)]

@@ -26,7 +26,7 @@ pub mod types;
 pub use catalog::{TypeCatalog, TypeGroup};
 pub use chunk::{Chunk, ChunkPlan};
 pub use detector::{DetectRequest, Detector, DetectorError, DetectorKind, FnDetector};
-pub use document::{AnonymizableDocument, DocumentError, Format, PageImage, Placement, Rect, Segment, SegmentEdits, SegmentId, SegmentKind};
+pub use document::{AnonymizableDocument, DocumentError, Format, PageImage, Placement, Rect, Segment, SegmentEdits, SegmentId, SegmentKind, TextHit};
 pub use merge::merge;
 pub use pipeline::{Pipeline, PipelineConfig};
 pub use replace::{Indexer, Replacement, Strategy, apply, apply_replacements, plan_replacements};
