@@ -261,7 +261,8 @@ fn flatten_overlaps(mut cands: Vec<Candidate>) -> Vec<Candidate> {
 
 #[cfg(feature = "coreml")]
 fn execution_providers() -> Vec<ort::execution_providers::ExecutionProviderDispatch> {
-    vec![ort::execution_providers::CoreMLExecutionProvider::default().build()]
+    // error_on_failure: a provider that fails to register would otherwise fall back to CPU silently.
+    vec![ort::execution_providers::CoreMLExecutionProvider::default().build().error_on_failure()]
 }
 
 #[cfg(not(feature = "coreml"))]

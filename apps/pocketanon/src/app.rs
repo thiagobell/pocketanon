@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers, RichText, Stroke, Ui};
 use pocketanon_core::{
     DetectorError, EntityType, Format, PipelineConfig, Placement, Review, Segment, SegmentEdits, SegmentId, SegmentKind,
-    Span, Strategy, Summary, TypeCatalog,
+    Span, Strategy, Summary, TextHit, TypeCatalog,
 };
 
 use crate::palette::{Action, Palette};
@@ -146,11 +146,31 @@ pub struct FileWs {
     pub zoom: f32,
     /// Fit the page width on the next frame (on open, and from the Fit button).
     pub fit_pending: bool,
+    /// The original file bytes; every Apply & Save loads a fresh copy from them.
+    pub bytes: Option<Arc<Vec<u8>>>,
+    /// Detect as soon as the Model is ready (the document opened while it was loading).
+    pub detect_when_ready: bool,
+    /// Replacements in the Apply & Save that is running.
+    pub saving_count: usize,
+    /// Text selected by dragging on a rendered page.
+    pub page_sel: Option<PageSelection>,
+    /// A selection event that could not be hit-tested yet (document busy).
+    pub sel_pending: Option<crate::file_ws::SelEvent>,
     /// Last text selection in the segment view (formats without pages).
     pub selection: Option<(SegmentId, Span)>,
     pub pages: HashMap<usize, PageTex>,
     pub pending_pages: HashSet<usize>,
     pub placements: HashMap<(SegmentId, Span), Vec<Placement>>,
+}
+
+/// A drag selection on a rendered page, bound to the anchor's segment.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageSelection {
+    pub anchor: TextHit,
+    pub head: TextHit,
+    pub span: Option<Span>,
+    /// `locate()` of `span` at scale 1.0.
+    pub placements: Vec<Placement>,
 }
 
 pub const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.25..=4.0;
@@ -181,6 +201,11 @@ impl Default for FileWs {
             zoom: 1.0,
             fit_pending: true,
             selection: None,
+            bytes: None,
+            detect_when_ready: false,
+            saving_count: 0,
+            page_sel: None,
+            sel_pending: None,
             pages: HashMap::new(),
             pending_pages: HashSet::new(),
             placements: HashMap::new(),
@@ -212,6 +237,12 @@ pub struct PocketAnon {
     /// Legend "Add term…" field and its type.
     pub term_input: String,
     pub term_type: EntityType,
+    /// The detection panel (Legend) is open. Session state only, not persisted.
+    pub legend_open: bool,
+    pub about_open: bool,
+    /// The floating Redact bar and the selection it belongs to.
+    pub bar: crate::redact_bar::BarState,
+    pub bar_for: Option<(Workspace, SegmentId, Span)>,
     ctx: Option<egui::Context>,
 }
 
@@ -245,6 +276,10 @@ impl PocketAnon {
             new_type_input: String::new(),
             term_input: String::new(),
             term_type: EntityType::new("person"),
+            legend_open: true,
+            about_open: false,
+            bar: Default::default(),
+            bar_for: None,
             ctx,
         };
         app.start_model();
@@ -373,7 +408,7 @@ impl PocketAnon {
             self.text.dirty = true;
             self.text.last_edit = None;
         }
-        if self.file.doc.is_some() && !self.file.saving && self.file.summary.is_none() {
+        if self.file.doc.is_some() && !self.file.saving {
             self.detect_file();
         }
     }
@@ -383,6 +418,54 @@ impl PocketAnon {
         if self.settings.add_term_rule(&self.catalog, term, t) {
             self.toasts.success(format!("Always redacting “{}” as {}", crate::text_util::preview(term, 30), t));
             self.types_changed();
+        }
+    }
+
+    /// Show the Redact bar for the selection `(seg, span)` of `ws` with its top-left at
+    /// `anchor`, and act on the choice: a manual Entity, plus a Term Rule when "Always" is on.
+    pub fn redact_bar(&mut self, ctx: &egui::Context, ws: Workspace, seg: SegmentId, span: Span, text: &str, anchor: egui::Pos2) {
+        if self.bar_for != Some((ws, seg, span)) {
+            self.bar = Default::default();
+            self.bar_for = Some((ws, seg, span));
+        }
+        let reviews = match ws {
+            Workspace::Text => self.text.reviews.as_deref(),
+            Workspace::File => self.file.reviews.as_deref(),
+        };
+        let top = crate::redact_bar::top_types(reviews, &self.catalog, 4);
+        let tk = self.tokens();
+        let Some(choice) =
+            crate::redact_bar::show(ctx, anchor, text, &mut self.bar, &top, &self.settings.custom_types, &self.catalog, &tk)
+        else {
+            return;
+        };
+        self.bar_for = None;
+        let t = choice.entity_type;
+        match ws {
+            Workspace::Text => {
+                if self.text.dirty || self.text.detecting.is_some() {
+                    self.toasts.info("Still analyzing; try again in a moment.");
+                } else {
+                    let threshold = self.settings.threshold;
+                    let input = self.text.input.clone();
+                    let reviews = self.text.reviews.get_or_insert_with(|| {
+                        vec![SegmentReview::new(SegmentId(0), SegmentKind::Body, input.clone(), Review::new(Vec::new(), threshold))]
+                    });
+                    let r = &mut reviews[0];
+                    if r.text == input && r.review.add_manual(&r.text, span, t.clone()).is_some() {
+                        self.text.selection = None;
+                        self.text.output_stale = true;
+                    }
+                }
+            }
+            Workspace::File => {
+                self.apply_review_ops(ws, vec![crate::review_ui::ReviewOp::AddManual(seg, span, t.clone())]);
+                self.file.selection = None;
+                self.file.page_sel = None;
+            }
+        }
+        if choice.always {
+            self.add_term_rule(text, &t);
         }
     }
 
@@ -402,7 +485,12 @@ impl PocketAnon {
         if changed {
             match ws {
                 Workspace::Text => self.text.output_stale = true,
-                Workspace::File => self.file.summary = None,
+                Workspace::File => {
+                    self.file.summary = None;
+                    // A manual Entity from a page selection needs its placement.
+                    self.file.page_sel = None;
+                    self.request_placements();
+                }
             }
         }
         for (term, t) in terms {
@@ -430,8 +518,7 @@ impl PocketAnon {
                 Workspace::File => self.apply_and_save_file(),
             },
             Action::ToggleLegend => {
-                self.settings.legend_open = !self.settings.legend_open;
-                self.settings_changed();
+                self.legend_open = !self.legend_open;
             }
             Action::OpenSettings => self.settings_open = !self.settings_open,
             Action::SwitchWorkspace => {
@@ -441,6 +528,7 @@ impl PocketAnon {
                 }
             }
             Action::Clear => self.clear(),
+            Action::About => self.about_open = true,
         }
     }
 
@@ -487,11 +575,13 @@ impl PocketAnon {
             self.toasts.info("Open a document first.");
             return;
         }
+        if self.file.saving {
+            return;
+        }
         let Some(detectors) = self.ready_detectors() else { return };
         let ticket = self.ticket();
         self.file.detecting = Some(ticket);
         self.file.summary = None;
-        self.file.saved_to = None;
         let config = self.pipeline_config();
         let segs = self.file.segments.iter().map(|s| (s.id, s.text.clone())).collect();
         self.jobs.detect(Target::File, ticket, detectors, config, segs);
@@ -539,6 +629,9 @@ impl PocketAnon {
     }
 
     pub fn clear(&mut self) {
+        if self.workspace == Workspace::File && self.file.saving {
+            return;
+        }
         match self.workspace {
             Workspace::Text => self.text = TextWs::default(),
             Workspace::File => self.file = FileWs { zoom: self.file.zoom, ..FileWs::default() },
@@ -555,6 +648,10 @@ impl PocketAnon {
     }
 
     pub fn open_path(&mut self, path: PathBuf) {
+        if self.file.saving {
+            self.toasts.info("Wait until saving has finished.");
+            return;
+        }
         if self.services.documents.detect_format(&path).is_none() {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("?").to_uppercase();
             self.toasts.error(format!("{ext} is not supported by this build. Supported: TXT, DOCX, RTF."));
@@ -566,15 +663,17 @@ impl PocketAnon {
         self.jobs.load_document(self.services.documents.clone(), ticket, path);
     }
 
-    /// File Anonymization: plan with one shared Indexer, confirm the output path, then apply and
-    /// save on a worker.
+    /// File Anonymization: confirm the output path, then [`Self::start_save`].
     pub fn apply_and_save_file(&mut self) {
-        let (Some(doc), Some(reviews), Some(input)) = (self.file.doc.clone(), &self.file.reviews, self.file.path.clone()) else {
+        if self.file.saving {
+            return;
+        }
+        let (Some(_), Some(input)) = (&self.file.reviews, self.file.path.clone()) else {
             self.toasts.info("Open a document and run detection first.");
             return;
         };
-        let (plan, summary) = plan_all(reviews);
-        let default = self.services.documents.output_path(&input);
+        // Default to the previous output (saving again after a change), else beside the input.
+        let default = self.file.saved_to.clone().unwrap_or_else(|| self.services.documents.output_path(&input));
         let mut dialog = rfd::FileDialog::new();
         if let Some(dir) = default.parent() {
             dialog = dialog.set_directory(dir);
@@ -586,6 +685,17 @@ impl PocketAnon {
             dialog = dialog.add_filter(f.to_string(), &[f.extension()]);
         }
         let Some(out) = dialog.save_file() else { return };
+        self.start_save(out);
+    }
+
+    /// Plan with one shared Indexer and apply & save on a worker, onto a fresh copy of the
+    /// original document. Refuses to write over the input. The Review stays as it is.
+    pub fn start_save(&mut self, out: PathBuf) {
+        let (Some(reviews), Some(input), Some(bytes), Some(format)) =
+            (&self.file.reviews, self.file.path.clone(), self.file.bytes.clone(), self.file.format)
+        else {
+            return;
+        };
         let same = match (std::fs::canonicalize(&input), std::fs::canonicalize(&out)) {
             (Ok(a), Ok(b)) => a == b,
             _ => input == out,
@@ -594,10 +704,21 @@ impl PocketAnon {
             self.toasts.error("PocketAnon never overwrites the input. Choose a different name.");
             return;
         }
+        let (plan, summary) = plan_all(reviews);
+        self.file.saving_count = summary.total();
         let edits = plan.into_iter().map(|(segment, replacements)| SegmentEdits { segment, replacements }).collect();
         self.file.saving = true;
+        self.file.summary = None;
         let ticket = self.file.ticket;
-        self.jobs.apply_and_save(doc, ticket, edits, summary, out);
+        self.jobs.apply_and_save(crate::worker::SaveJob {
+            loader: self.services.documents.clone(),
+            bytes,
+            format,
+            ticket,
+            edits,
+            summary,
+            out,
+        });
     }
 
     // -----------------------------------------------------------------------------------------
@@ -627,20 +748,26 @@ impl PocketAnon {
                         let threshold = self.settings.threshold;
                         let reviews: Vec<SegmentReview> = segments
                             .into_iter()
-                            .map(|(id, kind, text)| SegmentReview {
-                                id,
-                                kind,
-                                text,
-                                review: Review::new(by_id.remove(&id).unwrap_or_default(), threshold),
+                            .map(|(id, kind, text)| {
+                                SegmentReview::new(id, kind, text, Review::new(by_id.remove(&id).unwrap_or_default(), threshold))
                             })
                             .collect();
                         let n: usize = reviews.iter().map(|r| r.review.items().len()).sum();
+                        // Keep the user's decisions where the text is unchanged.
                         match target {
                             Target::Text => {
+                                let reviews = match &self.text.reviews {
+                                    Some(old) => crate::review_ui::merge_reviews(old, reviews),
+                                    None => reviews,
+                                };
                                 self.text.reviews = Some(reviews);
                                 self.text.output_stale = true;
                             }
                             Target::File => {
+                                let reviews = match &self.file.reviews {
+                                    Some(old) => crate::review_ui::merge_reviews(old, reviews),
+                                    None => reviews,
+                                };
                                 self.file.reviews = Some(reviews);
                                 if n == 0 {
                                     self.toasts.info("No Candidates found.");
@@ -670,6 +797,14 @@ impl PocketAnon {
                     }
                     Err(e) => self.toasts.error(format!("Could not load the Model: {e}")),
                 }
+                // A document opened while the Model was loading: detect now (rules only if the
+                // Model failed; the banner says so).
+                if self.file.detect_when_ready {
+                    self.file.detect_when_ready = false;
+                    if self.file.doc.is_some() && self.file.reviews.is_none() {
+                        self.detect_file();
+                    }
+                }
             }
             Msg::Download { id, progress } => {
                 self.model.downloads.insert(id, progress);
@@ -690,13 +825,20 @@ impl PocketAnon {
                 }
                 self.file.loading = false;
                 match result {
-                    Ok((doc, format, segments, pages)) => {
-                        self.file.doc = Some(doc);
-                        self.file.format = Some(format);
-                        self.file.segments = segments;
-                        self.file.page_count = pages;
+                    Ok(l) => {
+                        self.file.doc = Some(l.doc);
+                        self.file.bytes = Some(l.bytes);
+                        self.file.format = Some(l.format);
+                        self.file.segments = l.segments;
+                        self.file.page_count = l.pages;
                         self.file.name = name;
                         self.file.path = Some(path);
+                        // Detection starts by itself; wait for a Model that is still loading.
+                        if self.model.loading {
+                            self.file.detect_when_ready = true;
+                        } else {
+                            self.detect_file();
+                        }
                     }
                     Err(e) => self.toasts.error(e),
                 }
@@ -726,18 +868,16 @@ impl PocketAnon {
                 }
                 self.file.saving = false;
                 match result {
-                    Ok((out, summary, segments)) => {
-                        self.toasts.success(format!("Saved {}", out.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
+                    Ok((out, summary, _timings)) => {
+                        // The working document and its Review are untouched: nothing to re-render,
+                        // and the user can change the Review and save again.
+                        let msg = format!("Saved {} replacements to {}", summary.total(), out.display());
+                        #[cfg(target_os = "macos")]
+                        self.toasts.success_with(msg, crate::toast::ToastAction::Reveal(out.clone()));
+                        #[cfg(not(target_os = "macos"))]
+                        self.toasts.success(msg);
                         self.file.summary = Some(summary);
                         self.file.saved_to = Some(out);
-                        self.file.segments = segments;
-                        self.file.reviews = None;
-                        // The document now holds the Result: re-render the preview.
-                        let t = self.ticket();
-                        self.file.ticket = t;
-                        self.file.pages.clear();
-                        self.file.pending_pages.clear();
-                        self.file.placements.clear();
                     }
                     Err(e) => self.toasts.error(e),
                 }
@@ -861,7 +1001,8 @@ impl PocketAnon {
                 .frame(Frame::new().fill(tk.panel).inner_margin(Margin::same(0)).stroke(Stroke::new(1.0, tk.border)))
                 .show(ui, |ui| crate::settings_ui::drawer(self, ui, &tk));
         }
-        if self.settings.legend_open {
+        // With no document open the panel is always there: it is what the user sets up first.
+        if self.legend_open || (self.workspace == Workspace::File && self.file.doc.is_none()) {
             egui::Panel::right("legend")
                 .exact_size(crate::legend::WIDTH)
                 .resizable(false)
@@ -883,6 +1024,9 @@ impl PocketAnon {
 
         if let Some(a) = self.palette.show(&ctx) {
             self.run_action(&ctx, a);
+        }
+        if self.about_open {
+            crate::about::window(&ctx, &mut self.about_open, &tk);
         }
         self.toasts.show(&ctx);
         self.flush_settings(false);
@@ -914,12 +1058,11 @@ impl PocketAnon {
                             self.settings_open = !self.settings_open;
                         }
                         ui.add_space(4.0);
-                        if rail_button(ui, tk, "☰", "Detection", self.settings.legend_open)
+                        if rail_button(ui, tk, "☰", "Detection", self.legend_open)
                             .on_hover_text("What to detect: languages, entity types, term rules  ⌘L")
                             .clicked()
                         {
-                            self.settings.legend_open = !self.settings.legend_open;
-                            self.settings_changed();
+                            self.legend_open = !self.legend_open;
                         }
                     });
                 });
@@ -953,11 +1096,21 @@ impl PocketAnon {
                             Workspace::File => self.file.detecting.is_some(),
                         };
                         if self.workspace == Workspace::File {
-                            let can_apply = self.file.reviews.is_some() && !self.file.saving;
-                            if crate::widgets::primary_button(ui, tk, "Apply & Save…", can_apply).on_hover_text("⌘ Shift ↩").clicked() {
-                                self.run_action(&ctx, Action::Apply);
+                            if self.file.saving {
+                                let b = egui::Button::new(RichText::new("Saving…").color(tk.on_accent).strong())
+                                    .fill(tk.accent.gamma_multiply(0.7))
+                                    .stroke(Stroke::NONE)
+                                    .corner_radius(CornerRadius::same(6))
+                                    .min_size(egui::vec2(0.0, 28.0));
+                                ui.add_enabled(false, b);
+                                ui.add(egui::Spinner::new().size(14.0).color(tk.accent));
+                            } else {
+                                let can_apply = self.file.reviews.is_some();
+                                if crate::widgets::primary_button(ui, tk, "Apply & Save…", can_apply).on_hover_text("⌘ Shift ↩").clicked() {
+                                    self.run_action(&ctx, Action::Apply);
+                                }
                             }
-                            let can_detect = !detecting && self.file.doc.is_some();
+                            let can_detect = !detecting && self.file.doc.is_some() && !self.file.saving;
                             if crate::widgets::ghost_button(ui, tk, "🔍  Detect", can_detect).on_hover_text("⌘↩").clicked() {
                                 self.detect();
                             }
@@ -969,8 +1122,6 @@ impl PocketAnon {
                             Some("Loading Model…")
                         } else if self.file.loading {
                             Some("Opening…")
-                        } else if self.file.saving {
-                            Some("Saving…")
                         } else if !self.model.downloads.is_empty() {
                             Some("Downloading…")
                         } else {

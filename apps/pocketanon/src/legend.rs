@@ -18,8 +18,7 @@ pub fn panel(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
             ui.label(RichText::new("What to detect").size(15.0).strong().color(tk.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("🗙").on_hover_text("Hide this panel  ⌘L").clicked() {
-                    app.settings.legend_open = false;
-                    app.settings_changed();
+                    app.legend_open = false;
                 }
             });
         });

@@ -15,10 +15,11 @@ pub enum Action {
     OpenSettings,
     SwitchWorkspace,
     Clear,
+    About,
 }
 
 impl Action {
-    pub const ALL: [Action; 9] = [
+    pub const ALL: [Action; 10] = [
         Action::Run,
         Action::Apply,
         Action::CopyResult,
@@ -28,6 +29,7 @@ impl Action {
         Action::OpenSettings,
         Action::SwitchWorkspace,
         Action::Clear,
+        Action::About,
     ];
 
     pub fn label(self) -> &'static str {
@@ -41,6 +43,7 @@ impl Action {
             Action::OpenSettings => "Open settings",
             Action::SwitchWorkspace => "Switch workspace",
             Action::Clear => "Clear",
+            Action::About => "About PocketAnon",
         }
     }
 
@@ -69,6 +72,7 @@ impl Action {
             Action::OpenSettings => "preferences settings model language types",
             Action::SwitchWorkspace => "text file anonymization",
             Action::Clear => "reset new",
+            Action::About => "version license credits author",
         }
     }
 }

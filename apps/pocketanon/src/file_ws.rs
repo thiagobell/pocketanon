@@ -3,9 +3,11 @@
 use std::collections::HashMap;
 
 use egui::{Align2, Color32, CornerRadius, FontId, Layout, Margin, Rect, RichText, ScrollArea, Stroke, TextEdit, Ui};
-use pocketanon_core::CandidateId;
+use std::time::Instant;
 
-use crate::app::{PocketAnon, Workspace, ZOOM_RANGE};
+use pocketanon_core::{CandidateId, SegmentId};
+
+use crate::app::{PageSelection, PocketAnon, Workspace, ZOOM_RANGE};
 use crate::review_ui::{self, ReviewOp};
 use crate::text_util::{selection_span, trim_span};
 use crate::text_ws::{empty_state, review_header};
@@ -153,7 +155,17 @@ fn pages_view(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
     let mut requests: Vec<(usize, f32)> = Vec::new();
     let mut new_hover = None;
     let mut ops: Vec<ReviewOp> = Vec::new();
+    let mut sel_event: Option<SelEvent> = None;
+    let mut sel_anchor: Option<egui::Pos2> = None;
+    let mut page_rects: Vec<(usize, Rect)> = Vec::new();
     let types = app.settings.all_types(&app.catalog);
+    // The current page selection, as (segment review, span, text) for menus.
+    let selection: Option<(usize, pocketanon_core::Span, String)> = app.file.page_sel.as_ref().and_then(|s| {
+        let span = s.span?;
+        let reviews = app.file.reviews.as_ref()?;
+        let si = reviews.iter().position(|r| r.id == s.anchor.segment)?;
+        Some((si, span, reviews[si].text[span.range()].to_string()))
+    });
     let labels = app.file.reviews.as_deref().map(review_ui::placeholder_labels).unwrap_or_default();
     // Index candidates per page once.
     let mut per_page: HashMap<usize, Vec<(usize, CandidateId)>> = HashMap::new();
@@ -171,7 +183,7 @@ fn pages_view(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
         }
     }
     let frame = egui::Frame::new().fill(tk.canvas).corner_radius(CornerRadius::same(10)).stroke(Stroke::new(1.0, tk.border));
-    frame.show(ui, |ui| {
+    let frame_resp = frame.show(ui, |ui| {
         let width_avail = ui.available_width();
         if app.file.fit_pending {
             let w1 = app.file.pages.get(&0).map_or(PLACEHOLDER_PAGE.x, |p| p.size.x);
@@ -223,6 +235,37 @@ fn pages_view(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
                     FontId::proportional(10.5),
                     tk.text_faint,
                 );
+                // Dragging on the page selects text (hit-tested after the frame).
+                page_rects.push((page, rect));
+                let page_resp = ui.interact(rect, ui.id().with(("page", page)), egui::Sense::click_and_drag());
+                if let Some(pos) = page_resp.interact_pointer_pos() {
+                    if page_resp.drag_started() {
+                        sel_event = Some(SelEvent::Start(pos));
+                    } else if page_resp.dragged() {
+                        sel_event = Some(SelEvent::Move(pos));
+                    } else if page_resp.clicked() {
+                        sel_event = Some(SelEvent::Clear);
+                    }
+                }
+                if let Some((si, span, text)) = &selection {
+                    page_resp.context_menu(|ui| {
+                        if let Some(reviews) = &app.file.reviews {
+                            ops.extend(selection_menu(ui, reviews[*si].id, *span, text, &types, &app.catalog, &mut app.new_type_input));
+                        }
+                    });
+                }
+                // The selection, under the entity highlights.
+                if let Some(sel) = &app.file.page_sel {
+                    for pl in sel.placements.iter().filter(|p| p.page == page) {
+                        for r in &pl.rects {
+                            let sr = Rect::from_min_size(rect.min + egui::vec2(r.x, r.y) * zoom, egui::vec2(r.w, r.h) * zoom);
+                            if sel_anchor.is_none() && viewport.translate(origin.to_vec2()).contains(sr.left_top()) {
+                                sel_anchor = Some(sr.left_top());
+                            }
+                            painter.rect_filled(sr, CornerRadius::same(1), tk.accent.gamma_multiply(0.35));
+                        }
+                    }
+                }
                 let (Some(reviews), Some(items)) = (&app.file.reviews, per_page.get(&page)) else { continue };
                 let mut taken: Vec<Rect> = Vec::new();
                 for &(si, id) in items {
@@ -251,6 +294,11 @@ fn pages_view(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
                             }
                             resp.on_hover_text(format!("{} · right-click for options", review_ui::candidate_label(&labels, seg.id, item)))
                                 .context_menu(|ui| {
+                                    // With a selection, offer it first; the highlight's own menu follows.
+                                    if let Some((si, span, text)) = &selection {
+                                        ops.extend(selection_menu(ui, reviews[*si].id, *span, text, &types, &app.catalog, &mut app.new_type_input));
+                                        ui.separator();
+                                    }
                                     if let Some(op) = review_ui::candidate_menu(ui, seg, item, &types, &app.catalog, &mut app.new_type_input) {
                                         ops.push(op);
                                     }
@@ -279,6 +327,38 @@ fn pages_view(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
             ui.allocate_space(egui::vec2(max_w.max(width), y));
         });
     });
+    // Apply & Save in progress: dim the pages and say what is happening.
+    if app.file.saving {
+        let r = frame_resp.response.rect;
+        let p = ui.painter_at(r);
+        p.rect_filled(r, CornerRadius::same(10), Color32::from_black_alpha(150));
+        let msg = format!("Applying {} replacements and saving…", app.file.saving_count);
+        p.text(r.center() + egui::vec2(0.0, 18.0), Align2::CENTER_CENTER, msg, FontId::proportional(15.0), Color32::WHITE);
+        let spin = Rect::from_center_size(r.center() - egui::vec2(0.0, 14.0), egui::vec2(24.0, 24.0));
+        ui.put(spin, egui::Spinner::new().size(24.0).color(tk.accent));
+        // Swallow clicks on the pages while saving.
+        ui.interact(r, ui.id().with("saving_overlay"), egui::Sense::click_and_drag());
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        sel_event = Some(SelEvent::Clear);
+    }
+    // The Redact bar above the page selection, once the drag is over.
+    if let (Some(pos), Some((si, span, text))) = (sel_anchor, &selection)
+        && !app.file.saving
+        && !crate::redact_bar::suppressed(ui.ctx())
+        && let Some(seg) = app.file.reviews.as_ref().map(|r| r[*si].id)
+    {
+        app.redact_bar(ui.ctx(), Workspace::File, seg, *span, text, pos);
+    }
+    if sel_event.is_some() {
+        app.file.sel_pending = sel_event;
+    }
+    if let Some(ev) = app.file.sel_pending.take() {
+        update_selection(app, ev, &page_rects);
+        if app.file.sel_pending.is_some() {
+            ui.ctx().request_repaint();
+        }
+    }
     if let Some(doc) = app.file.doc.clone() {
         for (page, scale) in requests {
             app.file.pending_pages.insert(page);
@@ -291,6 +371,91 @@ fn pages_view(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
     app.apply_review_ops(Workspace::File, ops);
 }
 
+/// A pointer event for the page selection, in screen coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SelEvent {
+    Start(egui::Pos2),
+    Move(egui::Pos2),
+    Clear,
+}
+
+/// Hit-test the pointer on the page under it and update `page_sel`. Runs on the UI thread with
+/// `try_lock`: when a worker holds the document (rendering), the event is kept and retried on
+/// the next frame.
+fn update_selection(app: &mut PocketAnon, ev: SelEvent, page_rects: &[(usize, Rect)]) {
+    let pos = match ev {
+        SelEvent::Clear => {
+            app.file.page_sel = None;
+            return;
+        }
+        SelEvent::Start(p) | SelEvent::Move(p) => p,
+    };
+    let Some(doc) = app.file.doc.clone() else { return };
+    let Ok(d) = doc.try_lock() else {
+        app.file.sel_pending = Some(ev);
+        return;
+    };
+    let zoom = app.file.zoom;
+    // The page under the pointer, or the nearest one vertically while dragging past a gap.
+    let Some(&(page, rect)) = page_rects
+        .iter()
+        .find(|(_, r)| r.contains(pos))
+        .or_else(|| page_rects.iter().min_by(|a, b| a.1.distance_to_pos(pos).total_cmp(&b.1.distance_to_pos(pos))))
+    else {
+        return;
+    };
+    let local = ((pos - rect.min) / zoom).max(egui::Vec2::ZERO);
+    let started = Instant::now();
+    let hit = d.hit_test(page, local.x, local.y, 1.0);
+    let took = started.elapsed();
+    if took.as_millis() > 2 {
+        log::debug!("hit_test took {took:?}");
+    }
+    let order = |s: SegmentId| app.file.segments.iter().position(|x| x.id == s).unwrap_or(0);
+    match ev {
+        SelEvent::Start(_) => {
+            app.file.page_sel = hit.map(|h| PageSelection { anchor: h, head: h, span: None, placements: Vec::new() });
+        }
+        SelEvent::Move(_) => {
+            let Some(sel) = &mut app.file.page_sel else { return };
+            let Some(h) = hit else { return };
+            if h == sel.head {
+                return;
+            }
+            sel.head = h;
+            let Some(text) = app.file.segments.iter().find(|s| s.id == sel.anchor.segment).map(|s| s.text.as_str()) else { return };
+            sel.span = crate::text_util::clamp_selection(
+                text,
+                (order(sel.anchor.segment), sel.anchor.offset),
+                (order(h.segment), h.offset),
+            );
+            sel.placements = sel.span.map(|s| d.locate(sel.anchor.segment, s, 1.0)).unwrap_or_default();
+        }
+        SelEvent::Clear => {}
+    }
+}
+
+/// "Redact “…” as ▸" (a manual Entity in that segment) and "Always redact as ▸" (a Term Rule).
+fn selection_menu(
+    ui: &mut Ui,
+    seg: SegmentId,
+    span: pocketanon_core::Span,
+    text: &str,
+    types: &[pocketanon_core::EntityType],
+    catalog: &pocketanon_core::TypeCatalog,
+    new_type: &mut String,
+) -> Vec<ReviewOp> {
+    let mut ops = Vec::new();
+    ui.label(RichText::new(format!("“{}”", crate::text_util::preview(text, 32))).strong());
+    if let Some(t) = review_ui::type_submenu(ui, "Redact as", types, catalog, new_type) {
+        ops.push(ReviewOp::AddManual(seg, span, t));
+    }
+    if let Some(t) = review_ui::type_submenu(ui, "Always redact as (Term Rule)", types, catalog, new_type) {
+        ops.push(ReviewOp::AddTerm(text.to_string(), t));
+    }
+    ops
+}
+
 /// No page preview: the segment texts with highlights. Text can be selected; right-click a
 /// selection to always redact it.
 fn segments_view(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
@@ -298,6 +463,7 @@ fn segments_view(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
     let font_size = 14.0 * app.file.zoom;
     let menu_types = app.settings.active_types(&app.catalog);
     let mut choice = None;
+    let mut bar_anchor = None;
     card(tk).show(ui, |ui| {
         ui.set_min_size(egui::vec2(ui.available_width(), h - 26.0));
         ScrollArea::vertical().id_salt("segments").auto_shrink([false, false]).show(ui, |ui| {
@@ -340,6 +506,13 @@ fn segments_view(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
                     }
                 }
                 let sel = file.selection.filter(|(id, s)| *id == seg.id && s.is_valid_in(&seg.text));
+                if let Some((_, s)) = sel {
+                    let ci = crate::text_util::byte_to_char(&seg.text, s.start);
+                    let r = out.galley.pos_from_cursor(egui::text::CCursor::new(ci)).translate(out.galley_pos.to_vec2());
+                    if ui.clip_rect().contains(r.left_top()) {
+                        bar_anchor = Some((seg.id, s, seg.text[s.range()].to_string(), r.left_top()));
+                    }
+                }
                 out.response.context_menu(|ui| match sel {
                     Some((_, s)) => {
                         let term = seg.text[s.range()].to_string();
@@ -356,6 +529,11 @@ fn segments_view(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
             }
         });
     });
+    if let Some((seg, span, text, pos)) = bar_anchor
+        && !crate::redact_bar::suppressed(ui.ctx())
+    {
+        app.redact_bar(ui.ctx(), Workspace::File, seg, span, &text, pos);
+    }
     if let Some((term, t)) = choice {
         app.add_term_rule(&term, &t);
     }

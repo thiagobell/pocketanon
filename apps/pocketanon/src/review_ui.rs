@@ -21,6 +21,14 @@ pub struct SegmentReview {
     pub kind: SegmentKind,
     pub text: String,
     pub review: Review,
+    /// Spans the user deleted; a re-detection does not bring them back.
+    pub removed: Vec<Span>,
+}
+
+impl SegmentReview {
+    pub fn new(id: SegmentId, kind: SegmentKind, text: String, review: Review) -> Self {
+        SegmentReview { id, kind, text, review, removed: Vec::new() }
+    }
 }
 
 /// A candidate the pointer is over, in the list or in the text.
@@ -125,6 +133,8 @@ pub enum ReviewOp {
     Remove(SegmentId, CandidateId),
     /// Add a Term Rule (and re-run detection).
     AddTerm(String, EntityType),
+    /// Add a span of a segment by hand (from a selection on a page).
+    AddManual(SegmentId, Span, EntityType),
 }
 
 /// Apply the review-local ops; returns the Term Rules to add. `true` in the second slot when the
@@ -147,13 +157,57 @@ pub fn apply_ops(reviews: &mut [SegmentReview], ops: Vec<ReviewOp>) -> (Vec<(Str
             }
             ReviewOp::Remove(s, id) => {
                 if let Some(i) = seg_of(reviews, s) {
-                    changed |= reviews[i].review.remove(id);
+                    let r = &mut reviews[i];
+                    if let Some(item) = r.review.get(id) {
+                        if item.candidate.detector != DetectorKind::Manual {
+                            r.removed.push(item.candidate.span);
+                        }
+                        changed |= r.review.remove(id);
+                    }
                 }
             }
             ReviewOp::AddTerm(term, t) => terms.push((term, t)),
+            ReviewOp::AddManual(s, span, t) => {
+                if let Some(i) = seg_of(reviews, s) {
+                    let r = &mut reviews[i];
+                    changed |= r.review.add_manual(&r.text, span, t).is_some();
+                }
+            }
         }
     }
     (terms, changed)
+}
+
+/// Carry the user's Review decisions from `old` over to a fresh detection result `new`.
+///
+/// Only segments whose id and text are unchanged are merged. For every new candidate with the
+/// same span as an old one, the old accepted flag and Entity Type win. Old manual Entities are
+/// re-added (they win over overlapping new candidates, as when they were first added). An old
+/// rejection whose span no longer exists is dropped.
+pub fn merge_reviews(old: &[SegmentReview], mut new: Vec<SegmentReview>) -> Vec<SegmentReview> {
+    for seg in &mut new {
+        let Some(prev) = old.iter().find(|o| o.id == seg.id && o.text == seg.text) else { continue };
+        // Deleted detections stay deleted.
+        seg.removed = prev.removed.clone();
+        let gone: Vec<CandidateId> =
+            seg.review.items().iter().filter(|i| seg.removed.contains(&i.candidate.span)).map(|i| i.id).collect();
+        for id in gone {
+            seg.review.remove(id);
+        }
+        let ids: Vec<(CandidateId, Span)> = seg.review.items().iter().map(|i| (i.id, i.candidate.span)).collect();
+        for (id, span) in ids {
+            if let Some(o) = prev.review.items().iter().find(|o| o.candidate.span == span && o.candidate.detector != DetectorKind::Manual) {
+                seg.review.set_accepted(id, o.accepted);
+                seg.review.set_type(id, o.candidate.entity_type.clone());
+            }
+        }
+        for o in prev.review.items().iter().filter(|o| o.candidate.detector == DetectorKind::Manual) {
+            if let Some(id) = seg.review.add_manual(&seg.text, o.candidate.span, o.candidate.entity_type.clone()) {
+                seg.review.set_accepted(id, o.accepted);
+            }
+        }
+    }
+    new
 }
 
 /// The placeholder each accepted, visible candidate will become, without brackets
@@ -267,9 +321,13 @@ pub fn candidate_menu(
     if let Some(t) = type_submenu(ui, "Change type", types, catalog, new_type) {
         op = Some(ReviewOp::SetType(seg.id, item.id, t));
     }
-    let toggle = if item.accepted { "Reject" } else { "Accept" };
+    let toggle = if item.accepted { "Reject (keep, but do not replace)" } else { "Accept" };
     if ui.button(toggle).clicked() {
         op = Some(ReviewOp::SetAccepted(seg.id, item.id, !item.accepted));
+        ui.close();
+    }
+    if ui.button("Delete").on_hover_text("It stays deleted when detection runs again").clicked() {
+        op = Some(ReviewOp::Remove(seg.id, item.id));
         ui.close();
     }
     if let Some(t) = type_submenu(ui, &format!("Always redact “{}” as", preview(&text, 24)), types, catalog, new_type) {
@@ -305,8 +363,11 @@ pub fn candidate_rows(
             .stroke(Stroke::new(1.0, if is_hover { color.gamma_multiply(0.6) } else { tk.border }))
             .corner_radius(8)
             .inner_margin(egui::Margin::symmetric(8, 6));
-        let resp = frame
-            .show(ui, |ui| {
+        // The row senses clicks BEHIND its children (UiBuilder::sense registers first), so the
+        // checkbox, type dropdown and delete button keep working; right-click opens the menu.
+        let resp = ui
+            .scope_builder(egui::UiBuilder::new().id_salt(("row", sid, id)).sense(egui::Sense::click()), |ui| {
+                frame.show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     let mut accepted = item.accepted;
@@ -321,8 +382,10 @@ pub fn candidate_rows(
                     };
                     ui.add(egui::Label::new(rich).truncate()).on_hover_text(c.text(&seg.text));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if c.detector == DetectorKind::Manual
-                            && ui.small_button("🗙").on_hover_text("Remove this manual Entity").clicked()
+                        if ui
+                            .small_button("🗙")
+                            .on_hover_text("Delete this detection. It stays deleted when detection runs again.")
+                            .clicked()
                         {
                             ops.push(ReviewOp::Remove(sid, id));
                         }
@@ -361,9 +424,9 @@ pub fn candidate_rows(
                         }
                     });
                 });
+                })
             })
             .response;
-        let resp = resp.interact(egui::Sense::click());
         if resp.hovered() || resp.contains_pointer() {
             *hovered = Some((sid, id));
         }
@@ -410,7 +473,7 @@ mod tests {
             .into_iter()
             .map(|(s, e, t)| Candidate::new(Span::new(s, e), t, 0.9, DetectorKind::Model))
             .collect();
-        SegmentReview { id: SegmentId(id), kind: SegmentKind::Body, text: text.into(), review: Review::new(c, 0.5) }
+        SegmentReview::new(SegmentId(id), SegmentKind::Body, text.into(), Review::new(c, 0.5))
     }
 
     #[test]
@@ -463,6 +526,39 @@ mod tests {
         assert_eq!(ids(&groups[0]), vec![1, 0]);
         assert_eq!(ids(&groups[1]), vec![2]);
         assert_eq!(ids(&groups[2]), vec![1]); // Bob, unplaced
+    }
+
+    #[test]
+    fn merge_keeps_decisions_manual_entities_and_drops_vanished_rejections() {
+        let text = "Anna und Bob in Bonn";
+        let mut old = vec![seg(0, text, vec![(0, 4, "person"), (9, 12, "person"), (16, 20, "location")])];
+        let ids: Vec<_> = old[0].review.items().iter().map(|i| i.id).collect();
+        old[0].review.set_accepted(ids[0], false); // reject Anna
+        old[0].review.set_type(ids[1], "organization"); // retype Bob
+        old[0].review.set_accepted(ids[2], false); // reject Bonn (vanishes below)
+        old[0].review.add_manual(text, Span::new(5, 8), "custom"); // "und", by hand
+        // Another segment whose text changed is not merged.
+        old.push(seg(1, "old text", vec![(0, 3, "x")]));
+        let new = vec![seg(0, text, vec![(0, 4, "person"), (9, 12, "person")]), seg(1, "new text", vec![(0, 3, "y")])];
+        let merged = merge_reviews(&old, new);
+        let items = merged[0].review.items();
+        assert_eq!(items.len(), 3);
+        let by_span = |s: usize| items.iter().find(|i| i.candidate.span.start == s).unwrap();
+        assert!(!by_span(0).accepted);
+        assert_eq!(by_span(9).candidate.entity_type.as_str(), "organization");
+        assert!(by_span(9).accepted);
+        assert_eq!(by_span(5).candidate.detector, DetectorKind::Manual);
+        assert!(items.iter().all(|i| i.candidate.span.start != 16));
+        assert_eq!(merged[1].review.items()[0].candidate.entity_type.as_str(), "y");
+
+        // A deleted detection does not come back on re-detection.
+        let mut old = vec![seg(0, text, vec![(0, 4, "person"), (9, 12, "person")])];
+        let id = old[0].review.items()[0].id;
+        apply_ops(&mut old, vec![ReviewOp::Remove(SegmentId(0), id)]);
+        let merged = merge_reviews(&old, vec![seg(0, text, vec![(0, 4, "person"), (9, 12, "person")])]);
+        assert_eq!(merged[0].review.items().len(), 1);
+        assert_eq!(merged[0].review.items()[0].candidate.span, Span::new(9, 12));
+        assert_eq!(merged[0].removed, vec![Span::new(0, 4)]);
     }
 
     #[test]

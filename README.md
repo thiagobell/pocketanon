@@ -1,6 +1,6 @@
 # PocketAnon
 
-**Proof of concept.** A local desktop app, written in Rust, that finds personal information in text and documents and replaces it with placeholders. Nothing leaves your machine.
+**Proof of concept.** A local desktop app, that uses the GLiNER model to anonymize text and docx files. Your inputs do not leave the machine. 
 
 ![PocketAnon icon](assets/icon-256.png)
 

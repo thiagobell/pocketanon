@@ -118,6 +118,150 @@ fn term_rule_is_detected_on_next_run() {
     assert!(h.query_all_by_label_contains("FALKE").next().is_some());
 }
 
+/// Opening a document starts detection by itself, even while the Model is still loading.
+#[test]
+fn opening_a_document_detects_by_itself() {
+    let dir = std::env::temp_dir().join(format!("pocketanon-open-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("brief.txt");
+    std::fs::write(&input, "hi Max Mustermann, write to max@example.com.").unwrap();
+    // Open before the first frame: the Model is still loading when the document arrives.
+    let mut a = app();
+    assert!(a.model.loading, "the demo Model loads in the background");
+    a.open_path(input);
+    let mut h = Harness::builder().with_size(egui::vec2(1360.0, 840.0)).build_ui_state(|ui, app: &mut PocketAnon| app.show(ui), a);
+    wait(&mut h);
+    let r = h.state().file.reviews.as_ref().expect("detected without pressing Detect");
+    assert_eq!(r.iter().map(|r| r.review.entities().len()).sum::<usize>(), 2);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// With no document open, the detection panel is shown even when collapsed.
+#[test]
+fn detection_panel_is_shown_without_a_document() {
+    let mut h = Harness::builder().with_size(egui::vec2(1360.0, 840.0)).build_ui_state(|ui, app: &mut PocketAnon| app.show(ui), app());
+    wait(&mut h);
+    h.state_mut().legend_open = false;
+    h.state_mut().workspace = crate::app::Workspace::File;
+    h.run_steps(2);
+    assert!(h.query_by_label("What to detect").is_some());
+    // In the Text workspace the collapsed state is respected.
+    h.state_mut().workspace = crate::app::Workspace::Text;
+    h.run_steps(2);
+    assert!(h.query_by_label("What to detect").is_none());
+}
+
+/// Saving never touches the Review: reject one, save, the Review is still there with the
+/// rejection, and saving again writes the same output.
+#[test]
+fn review_survives_apply_and_save() {
+    let dir = std::env::temp_dir().join(format!("pocketanon-save-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("brief.txt");
+    std::fs::write(&input, "hi Max Mustermann,\n\nwrite to max@example.com.").unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1360.0, 840.0)).build_ui_state(|ui, app: &mut PocketAnon| app.show(ui), app());
+    wait(&mut h);
+    h.state_mut().open_path(input.clone());
+    wait(&mut h);
+    // Reject the email.
+    let (seg, id) = {
+        let r = h.state().file.reviews.as_ref().unwrap();
+        let s = r.iter().find(|s| s.text.contains('@')).unwrap();
+        (s.id, s.review.items()[0].id)
+    };
+    h.state_mut().apply_review_ops(crate::app::Workspace::File, vec![crate::review_ui::ReviewOp::SetAccepted(seg, id, false)]);
+    let out = dir.join("brief.anonymized.txt");
+    h.state_mut().start_save(out.clone());
+    assert!(h.state().file.saving);
+    wait(&mut h);
+    let first = std::fs::read_to_string(&out).unwrap();
+    assert_eq!(first, "hi [PERSON_1],\n\nwrite to max@example.com.");
+    let st = h.state();
+    assert!(!st.file.saving);
+    assert_eq!(st.file.summary.as_ref().unwrap().total(), 1);
+    let r = st.file.reviews.as_ref().expect("Review still present after saving");
+    let item = r.iter().find(|s| s.id == seg).unwrap().review.get(id).unwrap();
+    assert!(!item.accepted, "rejection survives");
+    // The working document is untouched.
+    assert!(st.file.segments.iter().any(|s| s.text.contains("Max Mustermann")));
+    // Re-detecting keeps the decision too.
+    h.state_mut().detect_file();
+    wait(&mut h);
+    let r = h.state().file.reviews.as_ref().unwrap();
+    assert!(r.iter().find(|s| s.id == seg).unwrap().review.items().iter().any(|i| i.candidate.text(&r[1].text).contains('@') && !i.accepted));
+    // Save again: same output.
+    std::fs::remove_file(&out).unwrap();
+    h.state_mut().start_save(out.clone());
+    wait(&mut h);
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), first);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The row widgets are clickable: retype through the dropdown, delete through the button.
+#[test]
+fn retype_and_delete_by_clicking() {
+    use egui::accesskit::Role;
+    let mut h = Harness::builder().with_size(egui::vec2(1360.0, 840.0)).build_ui_state(|ui, app: &mut PocketAnon| app.show(ui), app());
+    wait(&mut h);
+    h.state_mut().text.input = "Please call Max Mustermann at max@example.com today.".into();
+    h.state_mut().detect_text();
+    h.run_steps(1);
+    wait(&mut h);
+    // Dropdowns in tree order: detection panel (term type), manual-add type, then one per
+    // Review row in document order (person, email).
+    let combos: Vec<_> = h.get_all_by_role(Role::ComboBox).collect();
+    assert_eq!(combos.len(), 4);
+    combos[2].click();
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::Button, "organization").click();
+    h.run_steps(2);
+    let r = &h.state().text.reviews.as_ref().unwrap()[0];
+    let types: Vec<&str> = r.review.items().iter().map(|i| i.candidate.entity_type.as_str()).collect();
+    assert_eq!(types, vec!["organization", "email"]);
+    assert_eq!(h.state().text.output, "Please call [ORGANIZATION_1] at [EMAIL_1] today.");
+    // Delete the email.
+    h.get_all_by_role_and_label(Role::Button, "🗙").last().unwrap().click();
+    h.run_steps(2);
+    let r = &h.state().text.reviews.as_ref().unwrap()[0];
+    assert_eq!(r.review.items().len(), 1);
+    assert_eq!(h.state().text.output, "Please call [ORGANIZATION_1] at max@example.com today.");
+    // Re-detection keeps both decisions.
+    h.state_mut().text.dirty = true;
+    h.state_mut().text.last_edit = None;
+    h.run_steps(1);
+    wait(&mut h);
+    assert_eq!(h.state().text.output, "Please call [ORGANIZATION_1] at max@example.com today.");
+}
+
+/// Selecting text shows the floating Redact bar; its menu lists the document's most common
+/// types first, then the full tree.
+#[test]
+fn redact_bar_on_selection() {
+    use egui::accesskit::Role;
+    let mut h = Harness::builder().with_size(egui::vec2(1360.0, 840.0)).build_ui_state(|ui, app: &mut PocketAnon| app.show(ui), app());
+    wait(&mut h);
+    let text = "Please call Max Mustermann at max@example.com in Bonn today.";
+    h.state_mut().text.input = text.into();
+    h.state_mut().detect_text();
+    h.run_steps(1);
+    wait(&mut h);
+    assert!(h.query_by_role_and_label(Role::Button, "Redact").is_none(), "no selection, no bar");
+    let start = text.find("Bonn").unwrap();
+    h.state_mut().text.selection = Some(pocketanon_core::Span::new(start, start + 4));
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::Button, "Redact").click();
+    h.run_steps(2);
+    // Top types (person, email) appear twice: on top and in the tree.
+    assert_eq!(h.get_all_by_role_and_label(Role::Button, "person").count(), 2);
+    assert_eq!(h.get_all_by_role_and_label(Role::Button, "location").count(), 1);
+    // Pick from the top section (the tree lower down may be scrolled out of view).
+    h.get_all_by_role_and_label(Role::Button, "person").next().unwrap().click();
+    h.run_steps(3);
+    assert_eq!(h.state().text.output, "Please call [PERSON_1] at [EMAIL_1] in [PERSON_2] today.");
+    assert!(h.state().text.selection.is_none());
+    assert!(h.query_by_role_and_label(Role::Button, "Redact").is_none());
+}
+
 /// Renders the main screens to PNGs when `POCKETANON_SCREENSHOTS=<dir>` is set (GPU via wgpu).
 /// `POCKETANON_SCREENSHOTS=/tmp/shots cargo test -p pocketanon screenshots`
 #[test]
@@ -183,6 +327,34 @@ Herr Max Mustermann aus Berlin meldet sich nächste Woche.\n\nBitte überweisen 
         wait(&mut h); // page renders and placements
     }
     shot(&mut h, "08-docx-pages.png");
+    // A page selection, as a drag would produce it (hit-tested at both ends of the words).
+    {
+        let st = h.state_mut();
+        let doc = st.file.doc.clone().unwrap();
+        let d = doc.lock().unwrap();
+        let seg = st.file.segments.iter().find(|s| s.text.contains("Beispielstraße")).unwrap().clone();
+        let start = seg.text.find("Beispielstraße").unwrap();
+        let span = pocketanon_core::Span::new(start, start + "Beispielstraße 12".len());
+        let pls = d.locate(seg.id, span, 1.0);
+        let r = pls[0].rects[0];
+        let a = d.hit_test(pls[0].page, r.x + 1.0, r.y + r.h / 2.0, 1.0).unwrap();
+        let b = d.hit_test(pls[0].page, r.x + r.w - 0.5, r.y + r.h / 2.0, 1.0).unwrap();
+        let span = crate::text_util::clamp_selection(&seg.text, (0, a.offset), (0, b.offset));
+        let placements = span.map(|s| d.locate(seg.id, s, 1.0)).unwrap_or_default();
+        drop(d);
+        st.file.page_sel = Some(crate::app::PageSelection { anchor: a, head: b, span, placements });
+    }
+    shot(&mut h, "08b-docx-selection.png");
+    h.state_mut().bar.open = true;
+    shot(&mut h, "08d-docx-redact-menu.png");
+    h.state_mut().file.page_sel = None;
+    h.state_mut().file.saving = true;
+    h.state_mut().file.saving_count = 27;
+    shot(&mut h, "08c-docx-saving.png");
+    h.state_mut().file.saving = false;
+    h.state_mut().about_open = true;
+    shot(&mut h, "10-about.png");
+    h.state_mut().about_open = false;
     h.state_mut().file.zoom = 1.6;
     h.state_mut().file.fit_pending = false;
     for _ in 0..4 {
@@ -213,4 +385,55 @@ fn file_workspace_detect_and_save() {
     assert_eq!(plan.first().unwrap().1[0].with, "[PERSON_1]");
     assert_eq!(plan.last().unwrap().1[0].with, "[PERSON_1]");
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The page selection relies on `hit_test` and `locate` sharing one coordinate space at scale
+/// 1.0: hit-testing the centre of a located word lands inside it. Also prints the timings of
+/// the steps behind Apply & Save on the fixture.
+#[test]
+fn docx_hit_test_matches_locate_and_timings() {
+    use crate::services::DocumentLoader;
+    use std::time::Instant;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/letter_de.docx");
+    let bytes = std::fs::read(&path).unwrap();
+    let loader = crate::services::real::WordcraftLoader;
+    let fmt = loader.detect_format(&path).unwrap();
+    let t = Instant::now();
+    let doc = loader.load(&bytes, fmt).unwrap();
+    let load = t.elapsed();
+    let segs = doc.segments();
+    let seg = segs.iter().find(|s| s.text.contains("Beispielstraße")).expect("fixture text");
+    let start = seg.text.find("Beispielstraße").unwrap();
+    let span = pocketanon_core::Span::new(start, start + "Beispielstraße".len());
+    let t = Instant::now();
+    let pls = doc.locate(seg.id, span, 1.0);
+    let locate = t.elapsed();
+    let t = Instant::now();
+    let _ = doc.locate(seg.id, span, 1.0);
+    let locate2 = t.elapsed();
+    let r = pls[0].rects[0];
+    let t = Instant::now();
+    let hit = doc.hit_test(pls[0].page, r.x + r.w / 2.0, r.y + r.h / 2.0, 1.0).expect("hit");
+    let hit_time = t.elapsed();
+    assert_eq!(hit.segment, seg.id);
+    assert!(span.range().contains(&hit.offset), "{hit:?} not in {span:?}");
+    let t = Instant::now();
+    let _ = doc.render_page(0, 2.0);
+    let render = t.elapsed();
+    // Apply & Save on a fresh copy, as the app does.
+    let t = Instant::now();
+    let mut copy = loader.load(&bytes, fmt).unwrap();
+    let reload = t.elapsed();
+    let rep = pocketanon_core::Replacement { span, entity_type: "address".into(), with: "[ADDRESS_1]".into() };
+    let t = Instant::now();
+    copy.apply(&[pocketanon_core::SegmentEdits { segment: seg.id, replacements: vec![rep] }]).unwrap();
+    let apply = t.elapsed();
+    let t = Instant::now();
+    let out = copy.save().unwrap();
+    let save = t.elapsed();
+    assert!(!out.is_empty());
+    eprintln!(
+        "letter_de.docx: load {load:?}, first locate {locate:?}, second locate {locate2:?}, hit_test {hit_time:?}, render page@2x {render:?}, \
+         save path: reload {reload:?} + apply {apply:?} + save {save:?}"
+    );
 }

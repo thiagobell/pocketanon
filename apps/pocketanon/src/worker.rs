@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use pocketanon_core::{
     AnonymizableDocument, Candidate, DetectRequest, Detector, DetectorError, DetectorKind, DocumentError, Format,
@@ -46,15 +47,34 @@ pub enum Target {
     File,
 }
 
+/// A freshly opened document: the working copy (for Review and preview) plus the original
+/// bytes, from which every Apply & Save loads a separate copy.
+pub struct LoadedDoc {
+    pub doc: SharedDoc,
+    pub bytes: Arc<Vec<u8>>,
+    pub format: Format,
+    pub segments: Vec<Segment>,
+    pub pages: usize,
+}
+
+/// How long the steps of one Apply & Save took.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SaveTimings {
+    pub load: std::time::Duration,
+    pub apply: std::time::Duration,
+    pub save: std::time::Duration,
+    pub write: std::time::Duration,
+}
+
 pub enum Msg {
     Detected { target: Target, ticket: u64, result: Result<Vec<(SegmentId, Vec<Candidate>)>, DetectorError> },
     ModelLoaded { label: String, result: Result<SharedDetector, String> },
     Download { id: String, progress: DownloadProgress },
     Downloaded { id: String, result: Result<(), String> },
-    DocLoaded { ticket: u64, name: String, path: PathBuf, result: Result<(SharedDoc, Format, Vec<Segment>, usize), String> },
+    DocLoaded { ticket: u64, name: String, path: PathBuf, result: Result<LoadedDoc, String> },
     PageRendered { ticket: u64, page: usize, scale: f32, image: Option<PageImage> },
     Located { ticket: u64, placements: HashMap<(SegmentId, Span), Vec<Placement>> },
-    Saved { ticket: u64, result: Result<(PathBuf, Summary, Vec<Segment>), String> },
+    Saved { ticket: u64, result: Result<(PathBuf, Summary, SaveTimings), String> },
 }
 
 pub struct Jobs {
@@ -166,7 +186,7 @@ impl Jobs {
                 let doc = loader.load(&bytes, format).map_err(|e| e.to_string())?;
                 let segments = doc.segments();
                 let pages = doc.page_count();
-                Ok((Arc::new(Mutex::new(doc)) as SharedDoc, format, segments, pages))
+                Ok(LoadedDoc { doc: Arc::new(Mutex::new(doc)) as SharedDoc, bytes: Arc::new(bytes), format, segments, pages })
             })();
             let _ = tx.send(Msg::DocLoaded { ticket, name, path, result });
         });
@@ -195,16 +215,39 @@ impl Jobs {
         });
     }
 
-    pub fn apply_and_save(&mut self, doc: SharedDoc, ticket: u64, edits: Vec<SegmentEdits>, summary: Summary, out: PathBuf) {
+    /// Apply & Save on a COPY: load a fresh document from the original bytes, apply the edits,
+    /// save and write it, drop it. The working document (and its Review) is never touched.
+    pub fn apply_and_save(&mut self, job: SaveJob) {
         self.spawn("save", move |tx| {
+            let SaveJob { loader, bytes, format, ticket, edits, summary, out } = job;
             let result = (|| {
-                let mut d = doc.lock().map_err(|_| "document lock poisoned".to_string())?;
+                let mut t = SaveTimings::default();
+                let start = Instant::now();
+                let mut d = loader.load(&bytes, format).map_err(|e| e.to_string())?;
+                t.load = start.elapsed();
+                let step = Instant::now();
                 d.apply(&edits).map_err(|e: DocumentError| e.to_string())?;
-                let bytes = d.save().map_err(|e| e.to_string())?;
-                std::fs::write(&out, bytes).map_err(|e| format!("Could not write {}: {e}", out.display()))?;
-                Ok((out, summary, d.segments()))
+                t.apply = step.elapsed();
+                let step = Instant::now();
+                let data = d.save().map_err(|e| e.to_string())?;
+                t.save = step.elapsed();
+                let step = Instant::now();
+                std::fs::write(&out, data).map_err(|e| format!("Could not write {}: {e}", out.display()))?;
+                t.write = step.elapsed();
+                log::info!("apply & save: load {:?}, apply {:?}, save {:?}, write {:?}", t.load, t.apply, t.save, t.write);
+                Ok((out, summary, t))
             })();
             let _ = tx.send(Msg::Saved { ticket, result });
         });
     }
+}
+
+pub struct SaveJob {
+    pub loader: Arc<dyn DocumentLoader>,
+    pub bytes: Arc<Vec<u8>>,
+    pub format: Format,
+    pub ticket: u64,
+    pub edits: Vec<SegmentEdits>,
+    pub summary: Summary,
+    pub out: PathBuf,
 }

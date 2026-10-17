@@ -49,6 +49,7 @@ fn input_card(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
         let avail = ui.available_size();
         let menu_types = app.settings.active_types(&app.catalog);
         let mut menu_choice: Option<(String, pocketanon_core::EntityType)> = None;
+        let mut bar_anchor: Option<(pocketanon_core::Span, egui::Pos2)> = None;
         ScrollArea::vertical().id_salt("input_scroll").max_height(avail.y - 44.0).auto_shrink([false, false]).show(ui, |ui| {
             // The editor stays editable at all times. While the Review matches the text, the
             // layouter paints Candidate highlights; after an edit they vanish until detection
@@ -96,7 +97,21 @@ fn input_card(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
                     text.selection = sel;
                 }
             }
+            // Where the Redact bar goes: just above the start of the selection.
+            if let Some(s) = text.selection.filter(|s| s.is_valid_in(&text.input)) {
+                let ci = crate::text_util::byte_to_char(&text.input, s.start);
+                let r = out.galley.pos_from_cursor(egui::text::CCursor::new(ci)).translate(out.galley_pos.to_vec2());
+                if out.text_clip_rect.expand(4.0).contains(r.left_top()) {
+                    bar_anchor = Some((s, r.left_top()));
+                }
+            }
         });
+        if let Some((s, pos)) = bar_anchor
+            && !crate::redact_bar::suppressed(ui.ctx())
+        {
+            let term = app.text.input[s.range()].to_string();
+            app.redact_bar(ui.ctx(), crate::app::Workspace::Text, SegmentId(0), s, &term, pos);
+        }
         if let Some((term, t)) = menu_choice {
             app.add_term_rule(&term, &t);
         }
@@ -130,12 +145,7 @@ fn manual_add_row(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
         if clicked && let Some(span) = sel {
             let threshold = app.settings.threshold;
             let reviews = app.text.reviews.get_or_insert_with(|| {
-                vec![SegmentReview {
-                    id: SegmentId(0),
-                    kind: SegmentKind::Body,
-                    text: app.text.input.clone(),
-                    review: Review::new(Vec::new(), threshold),
-                }]
+                vec![SegmentReview::new(SegmentId(0), SegmentKind::Body, app.text.input.clone(), Review::new(Vec::new(), threshold))]
             });
             let seg = &mut reviews[0];
             if seg.text == app.text.input && seg.review.add_manual(&seg.text, span, app.text.manual_type.clone()).is_some() {

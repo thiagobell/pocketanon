@@ -13,7 +13,40 @@ pub enum ToastKind {
     Error,
 }
 
+/// A button on a toast; the app performs it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToastAction {
+    /// Show this file in the Finder (macOS).
+    Reveal(std::path::PathBuf),
+}
+
+impl ToastAction {
+    fn label(&self) -> &'static str {
+        match self {
+            ToastAction::Reveal(_) => "Reveal in Finder",
+        }
+    }
+
+    /// Perform the action.
+    pub fn run(&self) {
+        match self {
+            ToastAction::Reveal(path) => reveal(path),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn reveal(path: &std::path::Path) {
+    if let Err(e) = std::process::Command::new("open").arg("-R").arg(path).spawn() {
+        log::warn!("could not reveal {}: {e}", path.display());
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn reveal(_path: &std::path::Path) {}
+
 struct Toast {
+    action: Option<ToastAction>,
     kind: ToastKind,
     text: String,
     born: Instant,
@@ -33,9 +66,17 @@ impl Toasts {
             ToastKind::Error => log::warn!("{text}"),
             _ => log::info!("{text}"),
         }
-        self.items.push(Toast { kind, text, born: Instant::now() });
+        self.items.push(Toast { action: None, kind, text, born: Instant::now() });
         if self.items.len() > 5 {
             self.items.remove(0);
+        }
+    }
+
+    /// A success toast with a button; stays twice as long.
+    pub fn success_with(&mut self, t: impl Into<String>, action: ToastAction) {
+        self.push(ToastKind::Success, t);
+        if let Some(last) = self.items.last_mut() {
+            last.action = Some(action);
         }
     }
 
@@ -50,7 +91,7 @@ impl Toasts {
     }
 
     pub fn show(&mut self, ctx: &egui::Context) {
-        self.items.retain(|t| t.born.elapsed() < LIFETIME);
+        self.items.retain(|t| t.born.elapsed() < if t.action.is_some() { LIFETIME * 2 } else { LIFETIME });
         if self.items.is_empty() {
             return;
         }
@@ -61,7 +102,7 @@ impl Toasts {
             .anchor(Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                ui.set_max_width(360.0);
+                ui.set_max_width(420.0);
                 for (i, t) in self.items.iter().enumerate() {
                     let (dot, label) = match t.kind {
                         ToastKind::Info => (tk.accent, "Info"),
@@ -79,8 +120,13 @@ impl Toasts {
                                 let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
                                 ui.painter().circle_filled(rect.center(), 4.0, dot);
                                 ui.label(RichText::new(label).strong().color(tk.text));
-                                ui.label(RichText::new(&t.text).color(tk.text_dim));
+                                ui.add(egui::Label::new(RichText::new(&t.text).color(tk.text_dim)).wrap());
                             });
+                            if let Some(a) = &t.action
+                                && ui.button(a.label()).clicked()
+                            {
+                                a.run();
+                            }
                         })
                         .response
                         .interact(egui::Sense::click());

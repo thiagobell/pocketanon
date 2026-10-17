@@ -1,9 +1,11 @@
 //! PocketAnon desktop app.
 
+mod about;
 mod app;
 mod file_ws;
 mod legend;
 mod palette;
+mod redact_bar;
 mod review_ui;
 mod services;
 mod settings;

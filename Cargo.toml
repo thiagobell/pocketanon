@@ -6,7 +6,7 @@ members = ["crates/*", "apps/*"]
 version = "0.1.0"
 # Fill in: shown in `cargo metadata`, embedded in the binary (CARGO_PKG_AUTHORS) and copied into the
 # app bundle's copyright line by packaging/bundle.sh.
-authors = ["Your Name <you@example.com>"]
+authors = ["Thiago Bell <4528857+thiagobell@users.noreply.github.com>"]
 homepage = "https://example.com/pocketanon"
 repository = "https://example.com/pocketanon.git"
 edition = "2024"
@@ -62,6 +62,13 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 3
 debug = false
+# Wordcraft's layout runs ~100x slower with debug assertions on (20 s vs 150 ms for a page).
+debug-assertions = false
+overflow-checks = false
+
+# The document adapter drives Wordcraft layout; keep it optimised in dev too.
+[profile.dev.package.pocketanon-documents]
+opt-level = 3
 
 [profile.release]
 lto = "thin"

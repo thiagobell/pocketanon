@@ -8,7 +8,6 @@ pub fn char_to_byte(text: &str, char_idx: usize) -> usize {
 }
 
 /// Character index of byte offset `byte` (rounded down to a char boundary).
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn byte_to_char(text: &str, byte: usize) -> usize {
     let mut b = byte.min(text.len());
     while !text.is_char_boundary(b) {
@@ -28,10 +27,37 @@ pub fn selection_span(text: &str, a: usize, b: usize) -> Option<Span> {
 /// clean entity.
 pub fn trim_span(text: &str, span: Span) -> Option<Span> {
     let s = &text[span.range()];
+    if s.trim().is_empty() {
+        return None;
+    }
     let lead = s.len() - s.trim_start().len();
     let trail = s.len() - s.trim_end().len();
     let out = Span::new(span.start + lead, span.end - trail);
     (out.start < out.end).then_some(out)
+}
+
+/// The byte span selected by dragging from `anchor` to `head` (each a `(segment order, byte
+/// offset)`) within the anchor's segment `text`. A head in a later segment clamps to the end of
+/// the anchor segment, one in an earlier segment to its start. Offsets are snapped outward to
+/// char boundaries and surrounding whitespace is trimmed. `None` when nothing is selected.
+pub fn clamp_selection(text: &str, anchor: (usize, usize), head: (usize, usize)) -> Option<Span> {
+    let a = anchor.1.min(text.len());
+    let h = match head.0.cmp(&anchor.0) {
+        std::cmp::Ordering::Equal => head.1.min(text.len()),
+        std::cmp::Ordering::Greater => text.len(),
+        std::cmp::Ordering::Less => 0,
+    };
+    let (mut lo, mut hi) = if a <= h { (a, h) } else { (h, a) };
+    while !text.is_char_boundary(lo) {
+        lo -= 1;
+    }
+    while !text.is_char_boundary(hi) {
+        hi += 1;
+    }
+    if lo == hi {
+        return None;
+    }
+    trim_span(text, Span::new(lo, hi))
 }
 
 /// A short single-line preview of a span for list rows.
@@ -75,6 +101,27 @@ mod tests {
         assert!(selection_span(t, 4, 4).is_none());
         let padded = selection_span(t, start - 1, end).unwrap();
         assert_eq!(&t[trim_span(t, padded).unwrap().range()], "Jürgen Müller");
+    }
+
+    #[test]
+    fn page_selection_clamps_to_the_anchor_segment() {
+        let t = "  Jürgen Müller wohnt hier ";
+        // Same segment, backwards drag.
+        let s = clamp_selection(t, (3, 17), (3, 2)).unwrap();
+        assert_eq!(&t[s.range()], "Jürgen Müller");
+        // Head in a later segment: to the end (trimmed).
+        let s = clamp_selection(t, (3, 9), (4, 0)).unwrap();
+        assert_eq!(&t[s.range()], "Müller wohnt hier");
+        // Head in an earlier segment: to the start.
+        let s = clamp_selection(t, (3, 9), (1, 50)).unwrap();
+        assert_eq!(&t[s.range()], "Jürgen");
+        // Offsets inside a multibyte char snap outward.
+        let s = clamp_selection(t, (0, 4), (0, 6)).unwrap();
+        assert!(s.is_valid_in(t));
+        assert_eq!(&t[s.range()], "ür");
+        // Empty selection.
+        assert!(clamp_selection(t, (0, 5), (0, 5)).is_none());
+        assert!(clamp_selection(t, (0, 0), (0, 2)).is_none()); // whitespace only
     }
 
     #[test]

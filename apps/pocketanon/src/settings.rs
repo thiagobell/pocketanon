@@ -56,8 +56,6 @@ pub struct Settings {
     /// ADR-0003: user-authored configuration (terms the user chose to always redact), not
     /// document content; it is never filled from a document without an explicit user action.
     pub term_rules: Vec<TermRule>,
-    /// Whether the Legend panel is open.
-    pub legend_open: bool,
 }
 
 impl Default for Settings {
@@ -72,7 +70,6 @@ impl Default for Settings {
             model: None,
             theme: Theme::Dark,
             term_rules: Vec::new(),
-            legend_open: true,
         }
     }
 }
@@ -210,7 +207,7 @@ impl SettingsStore {
 
 #[cfg(test)]
 /// The JSON keys `settings.json` may contain. Adding a key means checking ADR-0003 first.
-pub const ALLOWED_KEYS: [&str; 9] = [
+pub const ALLOWED_KEYS: [&str; 8] = [
     "languages",
     "enabled_groups",
     "disabled_types",
@@ -219,7 +216,6 @@ pub const ALLOWED_KEYS: [&str; 9] = [
     "model",
     "theme",
     "term_rules",
-    "legend_open",
 ];
 
 #[cfg(test)]
@@ -286,6 +282,5 @@ mod tests {
         // An old settings.json with the removed `strategy` key still loads.
         let old: Settings = serde_json::from_str(r#"{"strategy":"redaction","threshold":0.4}"#).unwrap();
         assert_eq!(old.threshold, 0.4);
-        assert!(old.legend_open);
     }
 }
