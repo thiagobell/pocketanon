@@ -47,7 +47,7 @@ impl Format {
         match self {
             Format::Txt => "Exact: only the detected entities change.",
             Format::Docx => "Formatting preserved, including headers, footers, footnotes, comments and tables.",
-            Format::Rtf => "Structure preserved: paragraphs, character formatting, lists and tables survive; finer RTF details may not.",
+            Format::Rtf => "Structure preserved: paragraphs, character formatting, lists and tables survive. Headers, footers, footnotes and comments are dropped from the output.",
         }
     }
 }

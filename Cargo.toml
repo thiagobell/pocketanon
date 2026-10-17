@@ -22,14 +22,31 @@ regex = "1"
 unicode-segmentation = "1"
 proptest = "1"
 
+# ui (apps/pocketanon)
+egui = "0.36"
+eframe = { version = "0.36", default-features = false }
+egui_kittest = "0.36"
+rfd = "0.17"
+arboard = { version = "3.6", default-features = false }
+env_logger = "0.11"
+
+# model detector (crates/detect-gliner)
+gline-rs = "1.1"
+orp = "1"
+ort = { version = "=2.0.0-rc.9" }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+directories = "6"
+tempfile = "3"
+
 # Wordcraft (ADR-0002), pinned; only used by crates/documents.
 wordcraft-doc = { git = "https://github.com/storytold/wordcraft", rev = "eae242176108d328c5dd81fbc10370c51ab90706" }
 wordcraft-docx = { git = "https://github.com/storytold/wordcraft", rev = "eae242176108d328c5dd81fbc10370c51ab90706" }
 wordcraft-formats = { git = "https://github.com/storytold/wordcraft", rev = "eae242176108d328c5dd81fbc10370c51ab90706" }
 wordcraft-layout = { git = "https://github.com/storytold/wordcraft", rev = "eae242176108d328c5dd81fbc10370c51ab90706" }
 wordcraft-render = { git = "https://github.com/storytold/wordcraft", rev = "eae242176108d328c5dd81fbc10370c51ab90706" }
-wordcraft-fonts = { git = "https://github.com/storytold/wordcraft", rev = "eae242176108d328c5dd81fbc10370c51ab90706" }
-wordcraft-geom = { git = "https://github.com/storytold/wordcraft", rev = "eae242176108d328c5dd81fbc10370c51ab90706" }
+# Same versions Wordcraft uses (crates/documents: TXT keeps its own encoding for exact round trips).
+encoding_rs = "0.8"
+chardetng = "1"
 
 [profile.dev]
 opt-level = 1

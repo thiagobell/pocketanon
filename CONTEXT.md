@@ -90,7 +90,7 @@ A file the user submits for **File Anonymization**. Supported **Formats** are TX
 The file type of a **Document**. Each format carries a fixed **Fidelity**.
 
 **Fidelity**:
-What a **Format** promises about the output **Document** beyond the replaced **Entities**. TXT is exact. DOCX is formatting-preserving across all text parts, including headers, footers, footnotes and comments. RTF is structurally faithful: paragraphs, character formatting, lists and tables survive, finer RTF details may not.
+What a **Format** promises about the output **Document** beyond the replaced **Entities**. TXT is exact. DOCX is formatting-preserving across all text parts, including headers, footers, footnotes and comments. RTF is structurally faithful: paragraphs, character formatting, lists and tables survive; headers, footers, footnotes and comments do not appear in the output at all.
 _Avoid_: Quality, mode
 
 ## Outputs
