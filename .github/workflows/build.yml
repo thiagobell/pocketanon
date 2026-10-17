@@ -18,22 +18,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Only Apple Silicon for now. The other targets build fine; uncomment to restore.
         include:
-          - name: linux-x86_64
-            os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - name: windows-x86_64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - name: windows-aarch64
-            os: windows-11-arm
-            target: aarch64-pc-windows-msvc
           - name: macos-aarch64
             os: macos-latest
             target: aarch64-apple-darwin
-          - name: macos-x86_64
-            os: macos-latest # cross-compiled; Apple's SDK builds both architectures
-            target: x86_64-apple-darwin
+          # - name: linux-x86_64
+          #   os: ubuntu-24.04
+          #   target: x86_64-unknown-linux-gnu
+          # - name: windows-x86_64
+          #   os: windows-latest
+          #   target: x86_64-pc-windows-msvc
+          # - name: windows-aarch64
+          #   os: windows-11-arm
+          #   target: aarch64-pc-windows-msvc
+          # - name: macos-x86_64
+          #   os: macos-latest # cross-compiled; Apple's SDK builds both architectures
+          #   target: x86_64-apple-darwin
 
     steps:
       - uses: actions/checkout@v4
