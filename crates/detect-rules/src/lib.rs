@@ -14,7 +14,10 @@ use pocketanon_core::{Candidate, DetectRequest, Detector, DetectorError, Detecto
 
 mod patterns;
 mod scan;
+mod term;
 pub mod validators;
+
+pub use term::{TermDetector, TermRule};
 
 use patterns::{Ctx, RULES, Rule};
 

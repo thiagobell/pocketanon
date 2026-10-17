@@ -1,28 +1,21 @@
 //! File Anonymization: open a Document, Review its segments, Apply & Save.
 
-use egui::{Align2, CornerRadius, Layout, RichText, ScrollArea, Stroke, Ui};
-use pocketanon_core::SegmentKind;
+use std::collections::HashMap;
 
-use crate::app::PocketAnon;
-use crate::review_ui;
+use egui::{Align2, Color32, CornerRadius, FontId, Layout, Margin, Rect, RichText, ScrollArea, Stroke, TextEdit, Ui};
+use pocketanon_core::CandidateId;
+
+use crate::app::{PocketAnon, Workspace, ZOOM_RANGE};
+use crate::review_ui::{self, ReviewOp};
+use crate::text_util::{selection_span, trim_span};
 use crate::text_ws::{empty_state, review_header};
 use crate::theme::{Tokens, highlight_fill, type_color};
 use crate::widgets::{caption, card, chip, ghost_button, primary_button};
 
-const REVIEW_WIDTH: f32 = 380.0;
+const REVIEW_WIDTH: f32 = 340.0;
 /// A4 in points, used until a page has been rendered.
 const PLACEHOLDER_PAGE: egui::Vec2 = egui::vec2(595.0, 842.0);
 
-const KIND_ORDER: [SegmentKind; 8] = [
-    SegmentKind::Body,
-    SegmentKind::Header,
-    SegmentKind::Footer,
-    SegmentKind::Footnote,
-    SegmentKind::Endnote,
-    SegmentKind::Comment,
-    SegmentKind::TextBox,
-    SegmentKind::Other,
-];
 
 pub fn show(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
     let hovering_files = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
@@ -32,7 +25,7 @@ pub fn show(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
     }
     let full = ui.available_size();
     let gap = 12.0;
-    let review_w = REVIEW_WIDTH.min(full.x * 0.4);
+    let review_w = REVIEW_WIDTH.min(full.x * 0.42);
     let centre = (full.x - review_w - gap).max(240.0);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = gap;
@@ -40,7 +33,7 @@ pub fn show(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
             doc_header(app, ui, tk);
             ui.add_space(10.0);
             if app.file.page_count > 0 {
-                pages_view(app, ui);
+                pages_view(app, ui, tk);
             } else {
                 segments_view(app, ui, tk);
             }
@@ -79,15 +72,19 @@ fn doc_header(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
             ui.label(RichText::new("📄").size(22.0).color(tk.accent));
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(&app.file.name).size(14.0).strong().color(tk.text));
+                    ui.add(egui::Label::new(RichText::new(&app.file.name).size(14.0).strong().color(tk.text)).truncate());
                     if let Some(f) = app.file.format {
                         chip(ui, &f.to_string(), tk.accent, tk.dark);
                     }
                 });
                 if let Some(f) = app.file.format {
-                    ui.label(RichText::new(format!("Fidelity · {}", f.fidelity())).size(12.0).color(tk.text_dim));
+                    ui.add(egui::Label::new(RichText::new(format!("Fidelity · {}", f.fidelity())).size(12.0).color(tk.text_dim)).truncate());
                 }
             });
+        });
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            zoom_controls(app, ui, tk);
             ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                 if ghost_button(ui, tk, "Close", true).clicked() {
                     app.clear();
@@ -95,102 +92,221 @@ fn doc_header(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
                 if ghost_button(ui, tk, "Open…", true).clicked() {
                     app.open_file_dialog();
                 }
-                if app.file.page_count > 0 {
-                    ui.add(egui::Slider::new(&mut app.file.zoom, 0.4..=2.5).show_value(false));
-                    ui.label(RichText::new(format!("{:.0}%", app.file.zoom * 100.0)).size(12.0).color(tk.text_dim));
-                }
             });
         });
         if let Some(out) = &app.file.saved_to {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Saved").strong().color(tk.ok));
-                ui.label(RichText::new(format!("Result written to {}", out.display())).size(12.0).color(tk.text_dim));
+                ui.add(egui::Label::new(RichText::new(format!("Result written to {}", out.display())).size(12.0).color(tk.text_dim)).truncate());
             });
         }
     });
 }
 
-/// Rendered pages, lazily, with highlight rectangles from `locate()`.
-fn pages_view(app: &mut PocketAnon, ui: &mut Ui) {
+/// − / slider / + / Fit, with the percentage. ⌘+ ⌘− ⌘0 do the same.
+fn zoom_controls(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
+    ui.spacing_mut().item_spacing.x = 4.0;
+    ui.label(RichText::new("Zoom").size(12.0).color(tk.text_dim));
+    if ui.small_button(" − ").on_hover_text("Zoom out  ⌘−").clicked() {
+        app.file.zoom_by(1.0 / 1.2);
+    }
+    let mut z = app.file.zoom;
+    ui.spacing_mut().slider_width = 110.0;
+    if ui.add(egui::Slider::new(&mut z, ZOOM_RANGE).logarithmic(true).show_value(false)).changed() {
+        app.file.zoom = z;
+        app.file.fit_pending = false;
+    }
+    if ui.small_button(" + ").on_hover_text("Zoom in  ⌘+").clicked() {
+        app.file.zoom_by(1.2);
+    }
+    ui.label(RichText::new(format!("{:>3.0}%", app.file.zoom * 100.0)).monospace().size(11.5).color(tk.text_dim));
+    if ui.small_button("Fit").on_hover_text("Fit the page width  ⌘0").clicked() {
+        app.file.fit_pending = true;
+    }
+}
+
+/// Font size of placeholder tags at `zoom`: grows gently with the page (so tags do not swamp
+/// the text when zoomed in), never below 9 pt.
+pub fn label_size(zoom: f32) -> f32 {
+    (10.0 * zoom.sqrt()).clamp(9.0, 14.0)
+}
+
+/// Place a tag of `size` at the top-left above `anchor`, moving it off tags already placed.
+pub fn place_label(anchor: Rect, size: egui::Vec2, taken: &[Rect]) -> Rect {
+    let mut r = Rect::from_min_size(egui::pos2(anchor.left(), anchor.top() - size.y - 1.0), size);
+    for _ in 0..6 {
+        match taken.iter().find(|t| t.intersects(r)) {
+            Some(t) => r = r.translate(egui::vec2(t.right() - r.left() + 3.0, 0.0)),
+            None => break,
+        }
+    }
+    r
+}
+
+/// Rendered pages, lazily, with highlight rectangles from `locate()` and a placeholder tag on
+/// each. Right-click a highlight for its menu.
+fn pages_view(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
     let ppp = ui.ctx().pixels_per_point();
-    let zoom = app.file.zoom;
-    let want_scale = zoom * ppp;
-    let mut requests = Vec::new();
-    ScrollArea::both().id_salt("pages").auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
-        let width = ui.available_width();
-        let mut y = 8.0;
-        let origin = ui.min_rect().min;
-        for page in 0..app.file.page_count {
-            let size1 = app.file.pages.get(&page).map_or(PLACEHOLDER_PAGE, |p| p.size);
-            let size = size1 * zoom;
-            let x = ((width - size.x) / 2.0).max(8.0);
-            let local = egui::Rect::from_min_size(egui::pos2(x, y), size);
-            let rect = local.translate(origin.to_vec2());
-            y += size.y + 16.0;
-            if !local.intersects(viewport.expand(400.0)) {
-                continue;
-            }
-            // Page shadow + paper.
-            ui.painter().rect_filled(rect.translate(egui::vec2(0.0, 3.0)).expand(1.0), CornerRadius::same(3), egui::Color32::from_black_alpha(90));
-            ui.painter().rect_filled(rect, CornerRadius::same(2), egui::Color32::WHITE);
-            match app.file.pages.get(&page) {
-                Some(tex) => {
-                    ui.painter().image(tex.texture.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
-                    if (tex.scale - want_scale).abs() > 0.05 && !app.file.pending_pages.contains(&page) {
-                        requests.push(page);
-                    }
-                }
-                None => {
-                    ui.painter().text(rect.center(), Align2::CENTER_CENTER, format!("Page {}", page + 1), egui::FontId::proportional(14.0), egui::Color32::GRAY);
-                    if !app.file.pending_pages.contains(&page) {
-                        requests.push(page);
+    // Pages are rendered at screen resolution, but never beyond the GPU's texture limit.
+    let max_side = ui.ctx().input(|i| i.max_texture_side) as f32 - 2.0;
+    let mut requests: Vec<(usize, f32)> = Vec::new();
+    let mut new_hover = None;
+    let mut ops: Vec<ReviewOp> = Vec::new();
+    let types = app.settings.all_types(&app.catalog);
+    let labels = app.file.reviews.as_deref().map(review_ui::placeholder_labels).unwrap_or_default();
+    // Index candidates per page once.
+    let mut per_page: HashMap<usize, Vec<(usize, CandidateId)>> = HashMap::new();
+    if let Some(reviews) = &app.file.reviews {
+        for (si, seg) in reviews.iter().enumerate() {
+            for item in seg.review.visible() {
+                if let Some(pls) = app.file.placements.get(&(seg.id, item.candidate.span)) {
+                    let mut pages: Vec<usize> = pls.iter().map(|p| p.page).collect();
+                    pages.dedup();
+                    for p in pages {
+                        per_page.entry(p).or_default().push((si, item.id));
                     }
                 }
             }
-            // Highlights.
-            if let Some(reviews) = &app.file.reviews {
-                for seg in reviews {
-                    for item in seg.review.visible() {
-                        let Some(pls) = app.file.placements.get(&(seg.id, item.candidate.span)) else { continue };
-                        let c = type_color(&app.catalog, &item.candidate.entity_type);
-                        let hover = app.hovered == Some((seg.id, item.id));
-                        for pl in pls.iter().filter(|p| p.page == page) {
-                            for r in &pl.rects {
-                                let hr = egui::Rect::from_min_size(rect.min + egui::vec2(r.x, r.y) * zoom, egui::vec2(r.w, r.h) * zoom);
-                                let fill = if !item.accepted {
-                                    egui::Color32::TRANSPARENT
-                                } else if hover {
-                                    c.gamma_multiply(0.6)
-                                } else {
-                                    highlight_fill(c, false)
-                                };
-                                ui.painter().rect(hr, CornerRadius::same(2), fill, Stroke::new(1.0, c), egui::StrokeKind::Outside);
+        }
+    }
+    let frame = egui::Frame::new().fill(tk.canvas).corner_radius(CornerRadius::same(10)).stroke(Stroke::new(1.0, tk.border));
+    frame.show(ui, |ui| {
+        let width_avail = ui.available_width();
+        if app.file.fit_pending {
+            let w1 = app.file.pages.get(&0).map_or(PLACEHOLDER_PAGE.x, |p| p.size.x);
+            app.file.zoom = ((width_avail - 40.0) / w1).clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
+            if app.file.pages.contains_key(&0) {
+                app.file.fit_pending = false;
+            }
+        }
+        let zoom = app.file.zoom;
+        let want_scale = zoom * ppp;
+        ScrollArea::both().id_salt("pages").auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
+            let width = ui.available_width();
+            let mut y = 16.0;
+            let origin = ui.min_rect().min;
+            let mut max_w: f32 = 0.0;
+            for page in 0..app.file.page_count {
+                let size1 = app.file.pages.get(&page).map_or(PLACEHOLDER_PAGE, |p| p.size);
+                let size = size1 * zoom;
+                let page_scale = want_scale.min(max_side / size1.max_elem());
+                max_w = max_w.max(size.x + 32.0);
+                let x = ((width - size.x) / 2.0).max(16.0);
+                let local = Rect::from_min_size(egui::pos2(x, y), size);
+                let rect = local.translate(origin.to_vec2());
+                y += size.y + 20.0;
+                if !local.intersects(viewport.expand(400.0)) {
+                    continue;
+                }
+                let painter = ui.painter().clone();
+                painter.rect_filled(rect.translate(egui::vec2(0.0, 3.0)).expand(1.0), CornerRadius::same(3), Color32::from_black_alpha(90));
+                painter.rect_filled(rect, CornerRadius::same(2), Color32::WHITE);
+                match app.file.pages.get(&page) {
+                    Some(tex) => {
+                        painter.image(tex.texture.id(), rect, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+                        if (tex.scale - page_scale).abs() > 0.05 && !app.file.pending_pages.contains(&page) {
+                            requests.push((page, page_scale));
+                        }
+                    }
+                    None => {
+                        painter.text(rect.center(), Align2::CENTER_CENTER, format!("Page {}", page + 1), FontId::proportional(14.0), Color32::GRAY);
+                        if !app.file.pending_pages.contains(&page) {
+                            requests.push((page, page_scale));
+                        }
+                    }
+                }
+                painter.text(
+                    rect.left_bottom() + egui::vec2(0.0, 4.0),
+                    Align2::LEFT_TOP,
+                    format!("{}", page + 1),
+                    FontId::proportional(10.5),
+                    tk.text_faint,
+                );
+                let (Some(reviews), Some(items)) = (&app.file.reviews, per_page.get(&page)) else { continue };
+                let mut taken: Vec<Rect> = Vec::new();
+                for &(si, id) in items {
+                    let seg = &reviews[si];
+                    let Some(item) = seg.review.get(id) else { continue };
+                    let Some(pls) = app.file.placements.get(&(seg.id, item.candidate.span)) else { continue };
+                    let c = type_color(&app.catalog, &item.candidate.entity_type);
+                    let hover = app.hovered == Some((seg.id, id));
+                    let mut first: Option<Rect> = None;
+                    for pl in pls.iter().filter(|p| p.page == page) {
+                        for r in &pl.rects {
+                            let hr = Rect::from_min_size(rect.min + egui::vec2(r.x, r.y) * zoom, egui::vec2(r.w, r.h) * zoom);
+                            first.get_or_insert(hr);
+                            let fill = if !item.accepted {
+                                Color32::TRANSPARENT
+                            } else if hover {
+                                c.gamma_multiply(0.6)
+                            } else {
+                                highlight_fill(c, false)
+                            };
+                            let stroke = if item.accepted { Stroke::new(1.0, c) } else { Stroke::new(1.0, c.gamma_multiply(0.5)) };
+                            painter.rect(hr, CornerRadius::same(2), fill, stroke, egui::StrokeKind::Outside);
+                            let resp = ui.interact(hr, ui.id().with(("hl", seg.id, id, page, r.x as i32, r.y as i32)), egui::Sense::click());
+                            if resp.hovered() {
+                                new_hover = Some((seg.id, id));
                             }
+                            resp.on_hover_text(format!("{} · right-click for options", review_ui::candidate_label(&labels, seg.id, item)))
+                                .context_menu(|ui| {
+                                    if let Some(op) = review_ui::candidate_menu(ui, seg, item, &types, &app.catalog, &mut app.new_type_input) {
+                                        ops.push(op);
+                                    }
+                                });
+                        }
+                    }
+                    // Placeholder tag at the top-left of the first rectangle.
+                    if let Some(anchor) = first {
+                        let text = review_ui::candidate_label(&labels, seg.id, item);
+                        let font = FontId::monospace(label_size(zoom));
+                        let (fg, bg) = if item.accepted { (Color32::from_rgb(0x10, 0x10, 0x14), c) } else { (Color32::from_gray(90), Color32::from_gray(225)) };
+                        let galley = painter.layout_no_wrap(text, font, fg);
+                        let size = galley.size() + egui::vec2(6.0, 2.0);
+                        let lr = place_label(anchor, size, &taken);
+                        taken.push(lr);
+                        painter.rect_filled(lr, CornerRadius::same(3), bg);
+                        let pos = lr.min + egui::vec2(3.0, 1.0);
+                        painter.galley(pos, galley.clone(), fg);
+                        if !item.accepted {
+                            let mid = lr.center().y;
+                            painter.line_segment([egui::pos2(lr.left() + 2.0, mid), egui::pos2(lr.right() - 2.0, mid)], Stroke::new(1.0, fg));
                         }
                     }
                 }
             }
-        }
-        ui.allocate_space(egui::vec2(width, y));
+            ui.allocate_space(egui::vec2(max_w.max(width), y));
+        });
     });
     if let Some(doc) = app.file.doc.clone() {
-        for page in requests {
+        for (page, scale) in requests {
             app.file.pending_pages.insert(page);
-            app.jobs.render_page(doc.clone(), app.file.ticket, page, want_scale);
+            app.jobs.render_page(doc.clone(), app.file.ticket, page, scale);
         }
     }
+    if new_hover.is_some() {
+        app.hovered = new_hover;
+    }
+    app.apply_review_ops(Workspace::File, ops);
 }
 
-/// No page preview: the segment texts with highlights, grouped like the Review list.
+/// No page preview: the segment texts with highlights. Text can be selected; right-click a
+/// selection to always redact it.
 fn segments_view(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
     let h = ui.available_height();
+    let font_size = 14.0 * app.file.zoom;
+    let menu_types = app.settings.active_types(&app.catalog);
+    let mut choice = None;
     card(tk).show(ui, |ui| {
         ui.set_min_size(egui::vec2(ui.available_width(), h - 26.0));
         ScrollArea::vertical().id_salt("segments").auto_shrink([false, false]).show(ui, |ui| {
-            let wrap = ui.available_width();
             let mut last_kind = None;
-            for seg in &app.file.segments {
+            let hovered = app.hovered;
+            let catalog = &app.catalog;
+            let new_type = &mut app.new_type_input;
+            let file = &mut app.file;
+            for seg in &file.segments {
                 if seg.text.trim().is_empty() {
                     continue;
                 }
@@ -201,13 +317,48 @@ fn segments_view(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
                     caption(ui, tk, &seg.kind.to_string());
                     last_kind = Some(seg.kind);
                 }
-                let review = app.file.reviews.as_ref().and_then(|r| r.iter().find(|r| r.id == seg.id)).map(|r| &r.review);
-                let job = review_ui::highlight_job(&seg.text, review, seg.id, app.hovered, &app.catalog, tk, egui::FontId::proportional(14.0), wrap);
-                ui.add(egui::Label::new(job).selectable(true));
-                ui.add_space(6.0);
+                let review = file.reviews.as_ref().and_then(|r| r.iter().find(|r| r.id == seg.id)).map(|r| &r.review);
+                let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+                    let job = review_ui::highlight_job(buf.as_str(), review, seg.id, hovered, catalog, tk, FontId::proportional(font_size), wrap);
+                    ui.fonts_mut(|f| f.layout_job(job))
+                };
+                let mut text: &str = &seg.text;
+                let out = TextEdit::multiline(&mut text)
+                    .id_salt(("segment", seg.id))
+                    .frame(egui::Frame::NONE)
+                    .margin(Margin::same(2))
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(1)
+                    .layouter(&mut layouter)
+                    .show(ui);
+                if let Some(cr) = out.cursor_range {
+                    let sel = selection_span(&seg.text, cr.primary.index.0, cr.secondary.index.0).and_then(|s| trim_span(&seg.text, s));
+                    if let Some(s) = sel {
+                        file.selection = Some((seg.id, s));
+                    } else if out.response.has_focus() {
+                        file.selection = None;
+                    }
+                }
+                let sel = file.selection.filter(|(id, s)| *id == seg.id && s.is_valid_in(&seg.text));
+                out.response.context_menu(|ui| match sel {
+                    Some((_, s)) => {
+                        let term = seg.text[s.range()].to_string();
+                        let label = format!("Redact “{}” as", crate::text_util::preview(&term, 24));
+                        if let Some(t) = review_ui::type_submenu(ui, &label, &menu_types, catalog, new_type) {
+                            choice = Some((term, t));
+                        }
+                    }
+                    None => {
+                        ui.label(RichText::new("Select text to redact it").color(tk.text_faint));
+                    }
+                });
+                ui.add_space(4.0);
             }
         });
     });
+    if let Some((term, t)) = choice {
+        app.add_term_rule(&term, &t);
+    }
 }
 
 fn review_panel(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
@@ -221,8 +372,9 @@ fn review_panel(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
         let catalog = app.catalog.clone();
         let mut hovered = None;
         let summary_h = if app.file.summary.is_some() { 110.0 } else { 0.0 };
-        let mut changed = false;
-        match &mut app.file.reviews {
+        let mut ops = Vec::new();
+        let has_pages = app.file.page_count > 0;
+        match &app.file.reviews {
             None => empty_state(
                 ui,
                 tk,
@@ -230,38 +382,54 @@ fn review_panel(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
                 "Detect runs over every part of the Document: body, headers, footers, footnotes and comments.",
             ),
             Some(reviews) => {
+                let labels = review_ui::placeholder_labels(reviews);
+                let groups = review_ui::group_by_page(reviews, &app.file.placements);
                 ScrollArea::vertical().id_salt("file_review").max_height(ui.available_height() - summary_h).auto_shrink([false, false]).show(ui, |ui| {
-                    if review_ui::visible_count(reviews) == 0 {
+                    if groups.is_empty() {
                         empty_state(ui, tk, "Nothing above the Threshold", "Lower the Threshold to see more Candidates.");
                     }
-                    for kind in KIND_ORDER {
-                        let n: usize = reviews.iter().filter(|r| r.kind == kind).map(|r| r.review.visible().count()).sum();
-                        if n == 0 {
-                            continue;
-                        }
-                        egui::CollapsingHeader::new(RichText::new(format!("{}  ·  {n}", capitalise(&kind.to_string()))).strong().color(tk.text_dim))
-                            .id_salt(("kind", kind))
+                    for g in &groups {
+                        let title = match g.page {
+                            Some(p) => format!("Page {}", p + 1),
+                            None if has_pages => "Unplaced".to_string(),
+                            None => "Findings".to_string(),
+                        };
+                        egui::CollapsingHeader::new(RichText::new(format!("{title}  ·  {}", g.items.len())).strong().color(tk.text_dim))
+                            .id_salt(("page_group", g.page))
                             .default_open(true)
                             .show(ui, |ui| {
-                                changed |= review_ui::candidate_rows(ui, reviews, Some(kind), &types, &catalog, tk, &mut hovered);
+                                ops.extend(review_ui::candidate_rows(ui, reviews, &g.items, &labels, &types, &catalog, tk, &mut hovered, &mut app.new_type_input));
                             });
                     }
                 });
             }
         }
-        app.hovered = hovered;
-        if changed {
-            app.file.summary = None;
+        if hovered.is_some() || !ui.ui_contains_pointer() {
+            app.hovered = hovered;
         }
         if let Some(s) = &app.file.summary {
             ui.separator();
             caption(ui, tk, "Summary");
             review_ui::summary_view(ui, s, &app.catalog, tk);
         }
+        app.apply_review_ops(Workspace::File, ops);
     });
 }
 
-fn capitalise(s: &str) -> String {
-    let mut c = s.chars();
-    c.next().map_or_else(String::new, |f| f.to_uppercase().collect::<String>() + c.as_str())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn labels_do_not_overlap_and_stay_legible() {
+        assert_eq!(label_size(0.5), 9.0);
+        assert_eq!(label_size(1.0), 10.0);
+        assert!(label_size(4.0) <= 14.0);
+        let a = Rect::from_min_size(egui::pos2(10.0, 50.0), egui::vec2(40.0, 12.0));
+        let size = egui::vec2(30.0, 10.0);
+        let first = place_label(a, size, &[]);
+        assert_eq!(first.bottom(), a.top() - 1.0);
+        let second = place_label(a, size, &[first]);
+        assert!(!second.intersects(first));
+    }
 }

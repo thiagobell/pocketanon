@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use pocketanon_core::{EntityType, Language, Strategy, TypeCatalog};
+use pocketanon_core::{EntityType, Language, TypeCatalog};
 use serde::{Deserialize, Serialize};
 
 use crate::theme::Theme;
@@ -34,6 +34,13 @@ pub enum ModelChoice {
     Folder(PathBuf),
 }
 
+/// A user-defined Term Rule: a literal term always redacted as `entity_type`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TermRule {
+    pub term: String,
+    pub entity_type: EntityType,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -44,9 +51,13 @@ pub struct Settings {
     pub disabled_types: Vec<EntityType>,
     pub custom_types: Vec<EntityType>,
     pub threshold: f32,
-    pub strategy: Strategy,
     pub model: Option<ModelChoice>,
     pub theme: Theme,
+    /// ADR-0003: user-authored configuration (terms the user chose to always redact), not
+    /// document content; it is never filled from a document without an explicit user action.
+    pub term_rules: Vec<TermRule>,
+    /// Whether the Legend panel is open.
+    pub legend_open: bool,
 }
 
 impl Default for Settings {
@@ -58,9 +69,10 @@ impl Default for Settings {
             disabled_types: Vec::new(),
             custom_types: Vec::new(),
             threshold: 0.3,
-            strategy: Strategy::IndexedRedaction,
             model: None,
             theme: Theme::Dark,
+            term_rules: Vec::new(),
+            legend_open: true,
         }
     }
 }
@@ -125,6 +137,26 @@ impl Settings {
         out
     }
 
+    /// Add (or retype) a Term Rule. The term is trimmed; terms compare case-insensitively.
+    /// A type that is not built in becomes a Custom Type. Returns `false` for an empty term.
+    pub fn add_term_rule(&mut self, catalog: &TypeCatalog, term: &str, t: &EntityType) -> bool {
+        let term: String = term.split_whitespace().collect::<Vec<_>>().join(" ");
+        if term.is_empty() || t.as_str().is_empty() {
+            return false;
+        }
+        if !self.all_types(catalog).contains(t) {
+            self.custom_types.push(t.clone());
+        }
+        let key = term.to_lowercase();
+        self.term_rules.retain(|r| r.term.to_lowercase() != key);
+        self.term_rules.push(TermRule { term, entity_type: t.clone() });
+        true
+    }
+
+    pub fn remove_term_rule(&mut self, term: &str) {
+        self.term_rules.retain(|r| r.term != term);
+    }
+
     pub fn add_custom_type(&mut self, label: &str) -> bool {
         let t = EntityType::new(label);
         if t.as_str().is_empty() || self.custom_types.contains(&t) {
@@ -178,8 +210,17 @@ impl SettingsStore {
 
 #[cfg(test)]
 /// The JSON keys `settings.json` may contain. Adding a key means checking ADR-0003 first.
-pub const ALLOWED_KEYS: [&str; 8] =
-    ["languages", "enabled_groups", "disabled_types", "custom_types", "threshold", "strategy", "model", "theme"];
+pub const ALLOWED_KEYS: [&str; 9] = [
+    "languages",
+    "enabled_groups",
+    "disabled_types",
+    "custom_types",
+    "threshold",
+    "model",
+    "theme",
+    "term_rules",
+    "legend_open",
+];
 
 #[cfg(test)]
 pub fn json_keys(s: &Settings) -> BTreeSet<String> {
@@ -229,5 +270,22 @@ mod tests {
         assert!(s.add_custom_type("project code name"));
         assert!(!s.add_custom_type(" Project  Code Name"));
         assert!(s.active_types(&c).contains(&EntityType::new("project code name")));
+    }
+
+    #[test]
+    fn term_rules_dedupe_and_create_custom_types() {
+        let c = TypeCatalog::builtin();
+        let mut s = Settings::default();
+        assert!(s.add_term_rule(&c, " Falke ", &EntityType::new("project code name")));
+        assert!(s.custom_types.contains(&EntityType::new("project code name")));
+        assert!(s.add_term_rule(&c, "FALKE", &EntityType::new("person")));
+        assert_eq!(s.term_rules, vec![TermRule { term: "FALKE".into(), entity_type: EntityType::new("person") }]);
+        assert!(!s.add_term_rule(&c, "   ", &EntityType::new("person")));
+        s.remove_term_rule("FALKE");
+        assert!(s.term_rules.is_empty());
+        // An old settings.json with the removed `strategy` key still loads.
+        let old: Settings = serde_json::from_str(r#"{"strategy":"redaction","threshold":0.4}"#).unwrap();
+        assert_eq!(old.threshold, 0.4);
+        assert!(old.legend_open);
     }
 }

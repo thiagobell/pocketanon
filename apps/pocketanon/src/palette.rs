@@ -11,7 +11,7 @@ pub enum Action {
     CopyResult,
     OpenFile,
     SaveResult,
-    ToggleStrategy,
+    ToggleLegend,
     OpenSettings,
     SwitchWorkspace,
     Clear,
@@ -24,7 +24,7 @@ impl Action {
         Action::CopyResult,
         Action::OpenFile,
         Action::SaveResult,
-        Action::ToggleStrategy,
+        Action::ToggleLegend,
         Action::OpenSettings,
         Action::SwitchWorkspace,
         Action::Clear,
@@ -33,11 +33,11 @@ impl Action {
     pub fn label(self) -> &'static str {
         match self {
             Action::Run => "Run detection",
-            Action::Apply => "Apply Replacement Strategy",
+            Action::Apply => "Apply (Indexed Redaction)",
             Action::CopyResult => "Copy result",
             Action::OpenFile => "Open file…",
             Action::SaveResult => "Save result (Apply & Save)",
-            Action::ToggleStrategy => "Toggle Replacement Strategy",
+            Action::ToggleLegend => "Show or hide the Legend",
             Action::OpenSettings => "Open settings",
             Action::SwitchWorkspace => "Switch workspace",
             Action::Clear => "Clear",
@@ -51,6 +51,7 @@ impl Action {
             Action::OpenFile => "⌘O",
             Action::SaveResult => "⌘S",
             Action::OpenSettings => "⌘,",
+            Action::ToggleLegend => "⌘L",
             Action::SwitchWorkspace => "⌘1 / ⌘2",
             _ => "",
         }
@@ -64,7 +65,7 @@ impl Action {
             Action::CopyResult => "clipboard",
             Action::OpenFile => "load document file anonymization",
             Action::SaveResult => "export write",
-            Action::ToggleStrategy => "indexed redaction",
+            Action::ToggleLegend => "legend entity types languages term rules colors",
             Action::OpenSettings => "preferences settings model language types",
             Action::SwitchWorkspace => "text file anonymization",
             Action::Clear => "reset new",
@@ -190,6 +191,10 @@ impl Palette {
                     .shadow(ctx.global_style().visuals.window_shadow)
                     .show(ui, |ui| {
                         ui.set_width(520.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(RichText::new("Options (Cmd K)").size(11.0).strong().color(tk.text_faint));
+                        });
                         let edit = egui::TextEdit::singleline(&mut self.query)
                             .hint_text("Type a command…")
                             .frame(egui::Frame::NONE)
@@ -260,7 +265,7 @@ mod tests {
         assert_eq!(filter("copy")[0], Action::CopyResult);
         assert_eq!(filter("opfi")[0], Action::OpenFile);
         assert_eq!(filter("settings")[0], Action::OpenSettings);
-        assert_eq!(filter("toggle strat")[0], Action::ToggleStrategy);
+        assert_eq!(filter("legend")[0], Action::ToggleLegend);
         // keyword match
         assert!(filter("detect").contains(&Action::Run));
         assert!(filter("clipboard").contains(&Action::CopyResult));

@@ -34,3 +34,7 @@ cargo run -p pocketanon --example anonymize -- fixtures/letter_de.docx
 ```
 
 Vocabulary lives in `CONTEXT.md`; decisions in `docs/adr/`; the PoC plan in `docs/poc-plan.md`.
+
+## Licenses
+
+PocketAnon is MIT OR Apache-2.0. Third-party notices (crates, fonts, ONNX Runtime, models) are in `THIRD-PARTY-LICENSES.md`; policy and model lineage in `docs/licenses.md`. `cargo deny check` enforces the allowlist.

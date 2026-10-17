@@ -7,3 +7,4 @@
 - Wordcraft types must not leak out of `crates/documents` (ADR-0002).
 - Test data is synthetic only (Max Mustermann, user@example.com, test IBANs). Never add real personal data to fixtures or tests.
 - Build per crate (`cargo test -p <crate>`); the documents crate is slow to compile.
+- Licenses: allowlist in `deny.toml`, rationale and model lineage in `docs/licenses.md`. After changing dependencies run `cargo deny check` and regenerate `THIRD-PARTY-LICENSES.md` (`cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md`). Only GLiNER v2.1-line models (Apache-2.0); v0/v1 are CC-BY-NC.

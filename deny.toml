@@ -1,0 +1,52 @@
+# cargo-deny configuration: license allowlist and advisory checks.
+# Run `cargo deny check` (CI runs it in .github/workflows/licenses.yml).
+# Rationale for the allowlist: docs/licenses.md.
+
+[graph]
+all-features = true
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "0BSD",
+    "Unlicense",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "MPL-2.0",          # option-ext only; file-level copyleft, used unmodified
+    "OFL-1.1",          # fonts bundled by epaint_default_fonts and Wordcraft
+    "Ubuntu-font-1.0",  # Ubuntu-Light.ttf in epaint_default_fonts
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = true
+
+[advisories]
+yanked = "deny"
+# Only flag unmaintained crates that the workspace depends on directly;
+# transitive ones (paste, number_prefix, zbus_names, zvariant) are egui/indicatif/tokenizers concerns.
+unmaintained = "workspace"
+ignore = [
+    # zip 3.0.0 is pinned by Wordcraft (ADR-0002). All three advisories concern
+    # ZipArchive::extract / ZipStreamReader::extract, which Wordcraft does not call:
+    # it reads DOCX entries into memory. Re-check when Wordcraft moves off zip 3.
+    { id = "RUSTSEC-2026-0367", reason = "zip extract() path not used; see docs/licenses.md" },
+    { id = "RUSTSEC-2026-0368", reason = "zip extract() path not used; see docs/licenses.md" },
+    { id = "RUSTSEC-2026-0369", reason = "zip extract() path not used; see docs/licenses.md" },
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = ["https://github.com/storytold/wordcraft"]

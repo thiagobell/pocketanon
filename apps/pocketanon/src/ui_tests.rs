@@ -18,7 +18,7 @@ fn app() -> PocketAnon {
 }
 
 fn wait(h: &mut Harness<'_, PocketAnon>) {
-    for _ in 0..200 {
+    for _ in 0..4000 {
         h.run_steps(1);
         if !h.state().jobs.busy() {
             h.run_steps(2);
@@ -91,6 +91,33 @@ fn late_result_binds_to_its_snapshot() {
     assert!(!h.state().text.review_current());
 }
 
+/// A Term Rule added from the UI path (context menu / Legend) is detected on the next run.
+#[test]
+fn term_rule_is_detected_on_next_run() {
+    use pocketanon_core::EntityType;
+    let mut h = Harness::builder().with_size(egui::vec2(1360.0, 840.0)).build_ui_state(|ui, app: &mut PocketAnon| app.show(ui), app());
+    wait(&mut h);
+    h.state_mut().text.input = "projekt falke startet morgen".into();
+    h.state_mut().detect_text();
+    h.run_steps(1);
+    wait(&mut h);
+    assert!(h.state().text.reviews.as_ref().unwrap()[0].review.entities().is_empty());
+    // What the "Redact “falke” as ▸ New type…" menu does.
+    h.state_mut().add_term_rule("FALKE", &EntityType::new("project code name"));
+    assert!(h.state().text.dirty, "adding a Term Rule re-arms detection immediately");
+    h.run_steps(1);
+    wait(&mut h);
+    let r = &h.state().text.reviews.as_ref().unwrap()[0];
+    let ents = r.review.entities();
+    assert_eq!(ents.len(), 1);
+    assert_eq!(ents[0].text(&r.text), "falke");
+    assert_eq!(ents[0].entity_type.as_str(), "project code name");
+    assert!(h.state().settings.custom_types.contains(&EntityType::new("project code name")));
+    assert_eq!(h.state().text.output, "projekt [PROJECT_CODE_NAME_1] startet morgen");
+    // The Legend lists the rule.
+    assert!(h.query_all_by_label_contains("FALKE").next().is_some());
+}
+
 /// Renders the main screens to PNGs when `POCKETANON_SCREENSHOTS=<dir>` is set (GPU via wgpu).
 /// `POCKETANON_SCREENSHOTS=/tmp/shots cargo test -p pocketanon screenshots`
 #[test]
@@ -132,6 +159,37 @@ Herr Max Mustermann aus Berlin meldet sich nächste Woche.\n\nBitte überweisen 
     wait(&mut h);
     shot(&mut h, "07-file-review.png");
     std::fs::remove_file(&input).ok();
+
+    // A real DOCX through the Wordcraft adapter: page view with highlights and tags.
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/letter_de.docx");
+    let services = Services {
+        detectors: vec![Box::new(demo_detector()), Box::new(pocketanon_detect_rules::RuleDetector::new())],
+        documents: Box::new(crate::services::real::WordcraftLoader),
+        models: Box::new(FakeModelManager),
+    };
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1360.0, 840.0))
+        .with_pixels_per_point(2.0)
+        .wgpu()
+        .build_ui_state(|ui, app: &mut PocketAnon| app.show(ui), PocketAnon::new(None, services, SettingsStore::in_memory()));
+    wait(&mut h);
+    h.state_mut().open_path(fixture);
+    wait(&mut h);
+    h.state_mut().detect_file();
+    h.run_steps(1);
+    wait(&mut h);
+    for _ in 0..6 {
+        h.run_steps(2);
+        wait(&mut h); // page renders and placements
+    }
+    shot(&mut h, "08-docx-pages.png");
+    h.state_mut().file.zoom = 1.6;
+    h.state_mut().file.fit_pending = false;
+    for _ in 0..4 {
+        h.run_steps(2);
+        wait(&mut h);
+    }
+    shot(&mut h, "09-docx-zoomed.png");
 }
 
 /// Also exercises the File workspace with a TXT document through the stub loader.
@@ -149,7 +207,7 @@ fn file_workspace_detect_and_save() {
     h.state_mut().detect_file();
     wait(&mut h);
     let reviews = h.state().file.reviews.as_ref().unwrap();
-    let (plan, summary) = crate::review_ui::plan_all(reviews, pocketanon_core::Strategy::IndexedRedaction);
+    let (plan, summary) = crate::review_ui::plan_all(reviews);
     assert_eq!(summary.total(), 3);
     // Same person in body paragraph 1 and 3 gets the same index across segments.
     assert_eq!(plan.first().unwrap().1[0].with, "[PERSON_1]");

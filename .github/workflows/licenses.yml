@@ -1,0 +1,32 @@
+name: licenses
+
+on:
+  push:
+    paths: ["Cargo.lock", "Cargo.toml", "**/Cargo.toml", "deny.toml", "about.toml", "about.hbs", ".github/workflows/licenses.yml"]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1" # weekly, picks up new RustSec advisories
+
+jobs:
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses sources bans advisories
+
+  notice-up-to-date:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-about --features cli --locked
+      - run: cargo about generate about.hbs -o /tmp/THIRD-PARTY-LICENSES.md
+      - name: THIRD-PARTY-LICENSES.md must match Cargo.lock
+        run: |
+          if ! diff -q THIRD-PARTY-LICENSES.md /tmp/THIRD-PARTY-LICENSES.md; then
+            echo "::error::Regenerate with: cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md"
+            diff THIRD-PARTY-LICENSES.md /tmp/THIRD-PARTY-LICENSES.md | head -50
+            exit 1
+          fi

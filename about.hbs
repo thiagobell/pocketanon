@@ -1,0 +1,42 @@
+# Third-party licenses
+
+PocketAnon is licensed under MIT OR Apache-2.0. It links or bundles the third-party
+material below. Models, fonts and native libraries that cargo-about cannot see are
+listed first; the crate list is generated from `Cargo.lock` with
+`cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md`.
+
+## Models (downloaded at runtime, not shipped in the binary)
+
+| Registry id | Source | License | Lineage |
+|---|---|---|---|
+| gliner_multi_pii_v1 | https://huggingface.co/onnx-community/gliner_multi_pii-v1 | Apache-2.0 | ONNX conversion of urchade/gliner_multi_pii-v1 (Apache-2.0), fine-tuned from urchade/gliner_multi-v2.1 (Apache-2.0) on urchade/synthetic-pii-ner-mistral-v1 (Apache-2.0); backbone microsoft/mdeberta-v3-base (MIT) |
+| gliner_small_v2_1 | https://huggingface.co/onnx-community/gliner_small-v2.1 | Apache-2.0 | ONNX conversion of urchade/gliner_small-v2.1 (Apache-2.0), trained on urchade/pile-mistral-v0.1 (Apache-2.0); backbone microsoft/deberta-v3-small (MIT) |
+
+The onnx-community repositories carry no license field; they are unmodified conversions and
+declare the upstream model as `base_model`, so the upstream Apache-2.0 license applies.
+GLiNER v0/v1 models were CC-BY-NC-4.0 (Pile-NER); only the v2.1 line is used here.
+
+## Native libraries and bundled assets
+
+- ONNX Runtime 1.20 (Microsoft), prebuilt binaries fetched by `ort-sys` at build time: MIT.
+- Oniguruma, bundled and compiled by `onig_sys`: BSD-2-Clause.
+- Fonts in `epaint_default_fonts`: Hack (MIT), Noto Emoji (OFL-1.1), emoji-icon-font (MIT), Ubuntu Light (Ubuntu Font Licence 1.0).
+- Fonts bundled by Wordcraft: Source Sans 3, Source Serif 4, Inter, JetBrains Mono (OFL-1.1).
+- Hyphenation patterns bundled by Wordcraft: en-us (public domain / CC0-1.0), pl (MIT), it (MIT), pt (BSD-3-Clause). See Wordcraft's NOTICE.
+
+## Crates
+
+{{#each overview}}
+- {{{name}}} ({{count}} crates)
+{{/each}}
+
+{{#each licenses}}
+### {{{name}}}
+
+Used by: {{#each used_by}}{{crate.name}} {{crate.version}}{{#unless @last}}, {{/unless}}{{/each}}
+
+```
+{{{text}}}
+```
+
+{{/each}}

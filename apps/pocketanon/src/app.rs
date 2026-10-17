@@ -144,9 +144,22 @@ pub struct FileWs {
     pub detecting: Option<u64>,
     pub saving: bool,
     pub zoom: f32,
+    /// Fit the page width on the next frame (on open, and from the Fit button).
+    pub fit_pending: bool,
+    /// Last text selection in the segment view (formats without pages).
+    pub selection: Option<(SegmentId, Span)>,
     pub pages: HashMap<usize, PageTex>,
     pub pending_pages: HashSet<usize>,
     pub placements: HashMap<(SegmentId, Span), Vec<Placement>>,
+}
+
+pub const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.25..=4.0;
+
+impl FileWs {
+    pub fn zoom_by(&mut self, factor: f32) {
+        self.zoom = (self.zoom * factor).clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
+        self.fit_pending = false;
+    }
 }
 
 impl Default for FileWs {
@@ -166,6 +179,8 @@ impl Default for FileWs {
             detecting: None,
             saving: false,
             zoom: 1.0,
+            fit_pending: true,
+            selection: None,
             pages: HashMap::new(),
             pending_pages: HashSet::new(),
             placements: HashMap::new(),
@@ -192,6 +207,11 @@ pub struct PocketAnon {
     next_ticket: u64,
     theme_applied: Option<Theme>,
     pub custom_type_input: String,
+    /// Buffer of the "New type…" field in context menus.
+    pub new_type_input: String,
+    /// Legend "Add term…" field and its type.
+    pub term_input: String,
+    pub term_type: EntityType,
     ctx: Option<egui::Context>,
 }
 
@@ -222,6 +242,9 @@ impl PocketAnon {
             next_ticket: 1,
             theme_applied: None,
             custom_type_input: String::new(),
+            new_type_input: String::new(),
+            term_input: String::new(),
+            term_type: EntityType::new("person"),
             ctx,
         };
         app.start_model();
@@ -307,8 +330,13 @@ impl PocketAnon {
         self.jobs.download(self.services.models.clone(), id.to_string());
     }
 
+    /// Base detectors, a fresh Term Rule detector from the settings, and the Model Detector.
     fn detectors(&self) -> Vec<SharedDetector> {
         let mut d = self.services.base.clone();
+        if !self.settings.term_rules.is_empty() {
+            let rules = self.settings.term_rules.iter().map(|r| (r.term.clone(), r.entity_type.clone())).collect();
+            d.push(Arc::new(pocketanon_detect_rules::TermDetector::new(rules)));
+        }
         if let Some(m) = &self.model.detector {
             d.push(m.clone());
         }
@@ -337,6 +365,51 @@ impl PocketAnon {
         Some(d)
     }
 
+    /// Entity Types, Languages or Term Rules changed: persist and re-run detection where there
+    /// is something to detect on (Text: immediately via `auto_tick`; File: when a doc is open).
+    pub fn types_changed(&mut self) {
+        self.settings_changed();
+        if !self.text.input.trim().is_empty() {
+            self.text.dirty = true;
+            self.text.last_edit = None;
+        }
+        if self.file.doc.is_some() && !self.file.saving && self.file.summary.is_none() {
+            self.detect_file();
+        }
+    }
+
+    /// Add a Term Rule from the UI and re-run detection.
+    pub fn add_term_rule(&mut self, term: &str, t: &EntityType) {
+        if self.settings.add_term_rule(&self.catalog, term, t) {
+            self.toasts.success(format!("Always redacting “{}” as {}", crate::text_util::preview(term, 30), t));
+            self.types_changed();
+        }
+    }
+
+    /// Apply ops from a Review list or context menu in `ws`.
+    pub fn apply_review_ops(&mut self, ws: Workspace, ops: Vec<crate::review_ui::ReviewOp>) {
+        if ops.is_empty() {
+            return;
+        }
+        let reviews = match ws {
+            Workspace::Text => self.text.reviews.as_mut(),
+            Workspace::File => self.file.reviews.as_mut(),
+        };
+        let (terms, changed) = match reviews {
+            Some(r) => crate::review_ui::apply_ops(r, ops),
+            None => crate::review_ui::apply_ops(&mut [], ops),
+        };
+        if changed {
+            match ws {
+                Workspace::Text => self.text.output_stale = true,
+                Workspace::File => self.file.summary = None,
+            }
+        }
+        for (term, t) in terms {
+            self.add_term_rule(&term, &t);
+        }
+    }
+
     // -----------------------------------------------------------------------------------------
     // Actions
 
@@ -356,13 +429,9 @@ impl PocketAnon {
                 Workspace::Text => self.save_text_result(),
                 Workspace::File => self.apply_and_save_file(),
             },
-            Action::ToggleStrategy => {
-                self.settings.strategy = match self.settings.strategy {
-                    Strategy::IndexedRedaction => Strategy::Redaction,
-                    Strategy::Redaction => Strategy::IndexedRedaction,
-                };
+            Action::ToggleLegend => {
+                self.settings.legend_open = !self.settings.legend_open;
                 self.settings_changed();
-                self.toasts.info(format!("Replacement Strategy: {}", strategy_label(self.settings.strategy)));
             }
             Action::OpenSettings => self.settings_open = !self.settings_open,
             Action::SwitchWorkspace => {
@@ -397,7 +466,7 @@ impl PocketAnon {
 
     /// Text Anonymization runs by itself: once the input has rested for
     /// [`AUTO_DETECT_DEBOUNCE`] a detection starts, and the Result follows every change to the
-    /// Review or the Replacement Strategy. Returns how long until the next check, if one is due.
+    /// Review. Returns how long until the next check, if one is due.
     pub fn auto_tick(&mut self, now: Instant) -> Option<Duration> {
         let mut wake = None;
         if self.text.dirty && self.text.detecting.is_none() {
@@ -407,8 +476,7 @@ impl PocketAnon {
                 None => self.detect_text(),
             }
         }
-        let strategy_changed = self.text.output_strategy.is_some_and(|s| s != self.settings.strategy);
-        if self.text.reviews.is_some() && (self.text.output_stale || strategy_changed) {
+        if self.text.reviews.is_some() && self.text.output_stale {
             self.apply_text();
         }
         wake
@@ -432,13 +500,13 @@ impl PocketAnon {
     /// Text Anonymization: apply the Replacement Strategy to the accepted Entities.
     pub fn apply_text(&mut self) {
         let Some(reviews) = &self.text.reviews else { return };
-        let (plan, summary) = plan_all(reviews, self.settings.strategy);
+        let (plan, summary) = plan_all(reviews);
         let seg = &reviews[0];
         let reps = plan.into_iter().find(|(id, _)| *id == seg.id).map(|(_, r)| r).unwrap_or_default();
         self.text.output = pocketanon_core::apply_replacements(&seg.text, &reps);
         self.text.summary = Some(summary);
         self.text.output_stale = false;
-        self.text.output_strategy = Some(self.settings.strategy);
+        self.text.output_strategy = Some(crate::review_ui::STRATEGY);
     }
 
     pub fn copy_result(&mut self, ctx: &egui::Context) {
@@ -505,7 +573,7 @@ impl PocketAnon {
             self.toasts.info("Open a document and run detection first.");
             return;
         };
-        let (plan, summary) = plan_all(reviews, self.settings.strategy);
+        let (plan, summary) = plan_all(reviews);
         let default = self.services.documents.output_path(&input);
         let mut dialog = rfd::FileDialog::new();
         if let Some(dir) = default.parent() {
@@ -735,6 +803,21 @@ impl PocketAnon {
             if i.consume_shortcut(&cmd(Key::Num2)) {
                 self.workspace = Workspace::File;
             }
+            if i.consume_shortcut(&cmd(Key::L)) {
+                actions.push(Action::ToggleLegend);
+            }
+            // Document zoom (egui's own keyboard zoom of the whole UI is off, see theme::apply).
+            if self.workspace == Workspace::File {
+                if i.consume_shortcut(&cmd(Key::Plus)) || i.consume_shortcut(&cmd(Key::Equals)) {
+                    self.file.zoom_by(1.2);
+                }
+                if i.consume_shortcut(&cmd(Key::Minus)) {
+                    self.file.zoom_by(1.0 / 1.2);
+                }
+                if i.consume_shortcut(&cmd(Key::Num0)) {
+                    self.file.fit_pending = true;
+                }
+            }
         });
         for a in actions {
             self.run_action(ctx, a);
@@ -777,6 +860,13 @@ impl PocketAnon {
                 .resizable(false)
                 .frame(Frame::new().fill(tk.panel).inner_margin(Margin::same(0)).stroke(Stroke::new(1.0, tk.border)))
                 .show(ui, |ui| crate::settings_ui::drawer(self, ui, &tk));
+        }
+        if self.settings.legend_open {
+            egui::Panel::right("legend")
+                .exact_size(crate::legend::WIDTH)
+                .resizable(false)
+                .frame(Frame::new().fill(tk.panel).inner_margin(Margin::same(0)).stroke(Stroke::new(1.0, tk.border)))
+                .show(ui, |ui| crate::legend::panel(self, ui, &tk));
         }
         egui::CentralPanel::default()
             .frame(Frame::new().fill(tk.canvas).inner_margin(Margin::same(14)))
@@ -823,6 +913,14 @@ impl PocketAnon {
                         if rail_button(ui, tk, "⚙", "Settings", self.settings_open).on_hover_text("Settings  ⌘,").clicked() {
                             self.settings_open = !self.settings_open;
                         }
+                        ui.add_space(4.0);
+                        if rail_button(ui, tk, "☰", "Legend", self.settings.legend_open)
+                            .on_hover_text("Legend: Languages, Entity Types, Term Rules  ⌘L")
+                            .clicked()
+                        {
+                            self.settings.legend_open = !self.settings.legend_open;
+                            self.settings_changed();
+                        }
                     });
                 });
             });
@@ -841,19 +939,8 @@ impl PocketAnon {
                     ui.label(RichText::new(self.workspace.title()).size(14.0).color(tk.text_dim));
                     ui.add_space(18.0);
 
-                    let mut s = self.settings.strategy;
-                    if crate::widgets::segmented(
-                        ui,
-                        tk,
-                        &mut s,
-                        &[(Strategy::IndexedRedaction, "[PERSON_1]  Indexed"), (Strategy::Redaction, "[PERSON]  Redaction")],
-                    ) {
-                        self.settings.strategy = s;
-                        self.settings_changed();
-                    }
-
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let k = egui::Button::new(RichText::new("⌘K  Commands").size(12.0).color(tk.text_dim))
+                        let k = egui::Button::new(RichText::new("Options (Cmd K)").size(12.0).color(tk.text_dim))
                             .fill(tk.input)
                             .stroke(Stroke::new(1.0, tk.border))
                             .corner_radius(CornerRadius::same(6));
@@ -959,12 +1046,6 @@ fn rail_button(ui: &mut Ui, tk: &Tokens, icon: &str, label: &str, on: bool) -> e
     resp
 }
 
-pub fn strategy_label(s: Strategy) -> &'static str {
-    match s {
-        Strategy::IndexedRedaction => "Indexed Redaction",
-        Strategy::Redaction => "Redaction",
-    }
-}
 
 impl eframe::App for PocketAnon {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {

@@ -131,6 +131,8 @@ pub fn apply(ctx: &egui::Context, theme: Theme) {
         s.interaction.tooltip_delay = 0.4;
     });
     ctx.options_mut(|o| {
+        // ⌘+/⌘− zoom the document view, not the whole interface.
+        o.zoom_with_keyboard = false;
         o.theme_preference = if t.dark { egui::ThemePreference::Dark } else { egui::ThemePreference::Light };
     });
 }

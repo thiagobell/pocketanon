@@ -11,12 +11,12 @@ use crate::text_util::{selection_span, trim_span};
 use crate::theme::{Tokens, type_color};
 use crate::widgets::{caption, card, card_header, chip, ghost_button};
 
-const REVIEW_WIDTH: f32 = 360.0;
+const REVIEW_WIDTH: f32 = 330.0;
 
 pub fn show(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
     let full = ui.available_size();
     let gap = 12.0;
-    let review_w = REVIEW_WIDTH.min(full.x * 0.34);
+    let review_w = REVIEW_WIDTH.min(full.x * 0.36);
     let side = ((full.x - review_w - 2.0 * gap) / 2.0).max(150.0);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = gap;
@@ -47,12 +47,15 @@ fn input_card(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
         });
         ui.add_space(6.0);
         let avail = ui.available_size();
+        let menu_types = app.settings.active_types(&app.catalog);
+        let mut menu_choice: Option<(String, pocketanon_core::EntityType)> = None;
         ScrollArea::vertical().id_salt("input_scroll").max_height(avail.y - 44.0).auto_shrink([false, false]).show(ui, |ui| {
             // The editor stays editable at all times. While the Review matches the text, the
             // layouter paints Candidate highlights; after an edit they vanish until detection
             // catches up (a second after the last keystroke).
             let hovered = app.hovered;
             let catalog = &app.catalog;
+            let new_type = &mut app.new_type_input;
             let text = &mut app.text;
             let review = if current { text.reviews.as_ref().map(|r| &r[0].review) } else { None };
             let seg_id = SegmentId(0);
@@ -73,6 +76,20 @@ fn input_card(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
             if out.response.changed() {
                 text.edited(Instant::now());
             }
+            // Right-click a selection: always redact it as some type (a Term Rule).
+            let sel = text.selection.filter(|s| s.is_valid_in(&text.input));
+            out.response.context_menu(|ui| match sel {
+                Some(s) => {
+                    let term = text.input[s.range()].to_string();
+                    let label = format!("Redact “{}” as", crate::text_util::preview(&term, 24));
+                    if let Some(t) = review_ui::type_submenu(ui, &label, &menu_types, catalog, new_type) {
+                        menu_choice = Some((term, t));
+                    }
+                }
+                None => {
+                    ui.label(RichText::new("Select text to redact it").color(tk.text_faint));
+                }
+            });
             if let Some(cr) = out.cursor_range {
                 let sel = selection_span(&text.input, cr.primary.index.0, cr.secondary.index.0).and_then(|s| trim_span(&text.input, s));
                 if sel.is_some() || out.response.has_focus() {
@@ -80,6 +97,9 @@ fn input_card(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
                 }
             }
         });
+        if let Some((term, t)) = menu_choice {
+            app.add_term_rule(&term, &t);
+        }
         ui.add_space(4.0);
         manual_add_row(app, ui, tk);
     });
@@ -136,8 +156,8 @@ fn review_card(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
         let types = app.settings.all_types(&app.catalog);
         let catalog = app.catalog.clone();
         let mut hovered = None;
-        let mut changed = false;
-        match &mut app.text.reviews {
+        let mut ops = Vec::new();
+        match &app.text.reviews {
             None => {
                 empty_state(
                     ui,
@@ -156,13 +176,13 @@ fn review_card(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
                         if review_ui::visible_count(reviews) == 0 {
                             empty_state(ui, tk, "Nothing above the Threshold", "Lower the Threshold or add an Entity by hand.");
                         }
-                        changed = review_ui::candidate_rows(ui, reviews, None, &types, &catalog, tk, &mut hovered);
+                        let labels = review_ui::placeholder_labels(reviews);
+                        let items = review_ui::all_visible(reviews);
+                        ops = review_ui::candidate_rows(ui, reviews, &items, &labels, &types, &catalog, tk, &mut hovered, &mut app.new_type_input);
                     });
             }
         }
-        if changed {
-            app.text.output_stale = true;
-        }
+        app.apply_review_ops(crate::app::Workspace::Text, ops);
         app.hovered = hovered;
         if let Some(s) = &app.text.summary {
             ui.separator();
@@ -238,7 +258,7 @@ fn result_card(app: &mut PocketAnon, ui: &mut Ui, tk: &Tokens) {
                 ui,
                 tk,
                 "No Result yet",
-                &format!("The anonymized text appears here by itself, using {}.", crate::app::strategy_label(app.settings.strategy)),
+                "The anonymized text appears here by itself: every accepted Entity becomes an indexed placeholder such as [PERSON_1].",
             );
         }
         if copy {
