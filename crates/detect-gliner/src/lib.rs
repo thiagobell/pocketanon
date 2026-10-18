@@ -9,6 +9,7 @@ mod registry;
 mod store;
 
 pub use detector::{
+    DEFAULT_BATCH_SIZE, default_threads,
     DEFAULT_MAX_WORDS, DEFAULT_THRESHOLD, GlinerDetector, GlinerOptions, MODEL_MAX_WORDS, batch_labels,
     max_words_for_types, spans_to_candidates,
 };

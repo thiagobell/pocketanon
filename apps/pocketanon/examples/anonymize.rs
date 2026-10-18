@@ -28,7 +28,17 @@ fn main() {
                 Some("fp32") => Some(Quantization::Fp32),
                 _ => None,
             };
-            let det = GlinerDetector::load(&dir, GlinerOptions { quantization, ..GlinerOptions::default() }).expect("load model");
+            // POCKETANON_COREML=1 enables the CoreML provider; POCKETANON_BATCH=n sets texts per run.
+            let coreml = std::env::var("POCKETANON_COREML").is_ok_and(|v| v == "1");
+            let batch_size = std::env::var("POCKETANON_BATCH").ok().and_then(|v| v.parse().ok()).unwrap_or(pocketanon_detect_gliner::DEFAULT_BATCH_SIZE);
+            let mut opts = GlinerOptions { quantization, coreml, batch_size, ..GlinerOptions::default() };
+            if let Some(t) = std::env::var("POCKETANON_THREADS").ok().and_then(|v| v.parse().ok()) {
+                opts.threads = t;
+            }
+            if let Some(w) = std::env::var("POCKETANON_WORDS").ok().and_then(|v| v.parse().ok()) {
+                opts.max_words = w;
+            }
+            let det = GlinerDetector::load(&dir, opts).expect("load model");
             eprintln!("onnx: {}", det.onnx_path().display());
             eprintln!("model loaded in {:?}", t.elapsed());
             pipeline.add_detector(Box::new(det));
@@ -46,7 +56,12 @@ fn main() {
     let mut summary = Summary::default();
     let mut edits = Vec::new();
     let texts: Vec<&str> = segments.iter().map(|s| s.text.as_str()).collect();
-    let all = pipeline.detect_many(&texts).expect("detect");
+    // POCKETANON_PER_SEGMENT=1 runs every segment on its own (no packing), for comparisons.
+    let all = if std::env::var("POCKETANON_PER_SEGMENT").is_ok() {
+        texts.iter().map(|t| pipeline.detect(t).expect("detect")).collect()
+    } else {
+        pipeline.detect_many(&texts).expect("detect")
+    };
     for (seg, candidates) in segments.iter().zip(all) {
         let review = Review::new(candidates, threshold);
         for item in review.visible() {

@@ -39,7 +39,17 @@ pub struct GlinerOptions {
     pub threads: usize,
     /// Detector name; defaults to the model directory name (the Model id in a `ModelStore`).
     pub name: Option<String>,
+    /// Use the CoreML execution provider (needs the `coreml` feature; ignored otherwise).
+    pub coreml: bool,
+    /// Word limit per sequence the pipeline packs text up to (see [`DEFAULT_MAX_WORDS`]).
+    pub max_words: usize,
+    /// Maximum number of texts per ONNX session run. Texts in one run are padded to the longest
+    /// of them, so smaller batches waste less on mixed lengths and bound peak memory.
+    pub batch_size: usize,
 }
+
+/// Default texts per session run.
+pub const DEFAULT_BATCH_SIZE: usize = 16;
 
 impl Default for GlinerOptions {
     fn default() -> Self {
@@ -47,8 +57,11 @@ impl Default for GlinerOptions {
             quantization: None,
             onnx_file: None,
             threshold: DEFAULT_THRESHOLD,
-            threads: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4),
+            threads: default_threads(),
             name: None,
+            coreml: false,
+            max_words: DEFAULT_MAX_WORDS,
+            batch_size: DEFAULT_BATCH_SIZE,
         }
     }
 }
@@ -58,6 +71,8 @@ pub struct GlinerDetector {
     name: String,
     onnx_path: PathBuf,
     model: GLiNER<SpanMode>,
+    max_words: usize,
+    batch_size: usize,
 }
 
 // `GLiNER<SpanMode>` holds an `ort::Session` (thread-safe `run(&self)`), a `tokenizers::Tokenizer`
@@ -109,12 +124,12 @@ impl GlinerDetector {
             .with_multi_label(false);
         let runtime = RuntimeParameters::default()
             .with_threads(options.threads.max(1))
-            .with_execution_providers(execution_providers());
+            .with_execution_providers(execution_providers(options.coreml));
 
         let model = GLiNER::<SpanMode>::new(params, runtime, tokenizer, onnx_path.clone())
             .map_err(|e| GlinerError::Load(format!("{}: {e}", onnx_path.display())))?;
         log::info!("loaded GLiNER model {name} from {}", onnx_path.display());
-        Ok(GlinerDetector { name, onnx_path, model })
+        Ok(GlinerDetector { name, onnx_path, model, max_words: options.max_words.max(1), batch_size: options.batch_size.max(1) })
     }
 
     /// The ONNX file actually loaded.
@@ -143,13 +158,28 @@ impl GlinerDetector {
         }
         let batches = batch_labels(labels, MAX_TYPES_PER_CALL);
         let multi = batches.len() > 1;
+        // Sort by length so each session run pads to a similar length.
+        let mut live = live;
+        live.sort_by_key(|&i| texts[i].split_whitespace().count());
         for batch in batches {
-            let input = TextInput::new(live.iter().map(|&i| texts[i].to_string()).collect(), batch)
-                .map_err(|e| GlinerError::Inference(e.to_string()))?;
-            let output = self.model.inference(input).map_err(|e| GlinerError::Inference(e.to_string()))?;
-            for (k, spans) in output.spans.iter().enumerate() {
-                let Some(&i) = live.get(k) else { break };
-                out[i].extend(spans_to_candidates(texts[i], spans.iter()));
+            let n_labels = batch.len();
+            for run in live.chunks(self.batch_size) {
+                let input = TextInput::new(run.iter().map(|&i| texts[i].to_string()).collect(), batch.clone())
+                    .map_err(|e| GlinerError::Inference(e.to_string()))?;
+                let started = std::time::Instant::now();
+                let output = self.model.inference(input).map_err(|e| GlinerError::Inference(e.to_string()))?;
+                log::debug!(
+                    "{}: inference over {} texts ({} words max, {} words total) x {n_labels} labels took {:.2?}",
+                    self.name,
+                    run.len(),
+                    run.iter().map(|&i| texts[i].split_whitespace().count()).max().unwrap_or(0),
+                    run.iter().map(|&i| texts[i].split_whitespace().count()).sum::<usize>(),
+                    started.elapsed()
+                );
+                for (k, spans) in output.spans.iter().enumerate() {
+                    let Some(&i) = run.get(k) else { break };
+                    out[i].extend(spans_to_candidates(texts[i], spans.iter()));
+                }
             }
         }
         for cands in out.iter_mut() {
@@ -182,10 +212,8 @@ impl Detector for GlinerDetector {
         self.name.clone()
     }
 
-    /// The trait has no access to the active types, so this uses [`DEFAULT_MAX_WORDS`]; use
-    /// [`GlinerDetector::max_words_for`] when the type count is known.
     fn max_words(&self) -> Option<usize> {
-        Some(DEFAULT_MAX_WORDS)
+        Some(self.max_words)
     }
 
     fn detect(&self, text: &str, req: &DetectRequest<'_>) -> Result<Vec<Candidate>, DetectorError> {
@@ -203,6 +231,13 @@ impl Detector for GlinerDetector {
         }
         self.detect_labels_batch(texts, &labels).map_err(|e| DetectorError::failed(self.name.clone(), e))
     }
+}
+
+/// Half the logical CPUs, at least 2. Measured on an M3 (4 performance + 4 efficiency cores):
+/// 8 intra-op threads were 1.6 to 2 times slower than 4, because the efficiency cores stall the
+/// others; on x86 the same rule lands on the physical core count.
+pub fn default_threads() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).div_ceil(2).max(2)
 }
 
 /// `MODEL_MAX_WORDS - (2 * n + 2)` clamped to `[64, 300]`, with `n` capped at
@@ -260,13 +295,16 @@ fn flatten_overlaps(mut cands: Vec<Candidate>) -> Vec<Candidate> {
 }
 
 #[cfg(feature = "coreml")]
-fn execution_providers() -> Vec<ort::execution_providers::ExecutionProviderDispatch> {
+fn execution_providers(coreml: bool) -> Vec<ort::execution_providers::ExecutionProviderDispatch> {
+    if !coreml {
+        return Vec::new();
+    }
     // error_on_failure: a provider that fails to register would otherwise fall back to CPU silently.
     vec![ort::execution_providers::CoreMLExecutionProvider::default().build().error_on_failure()]
 }
 
 #[cfg(not(feature = "coreml"))]
-fn execution_providers() -> Vec<ort::execution_providers::ExecutionProviderDispatch> {
+fn execution_providers(_coreml: bool) -> Vec<ort::execution_providers::ExecutionProviderDispatch> {
     Vec::new()
 }
 

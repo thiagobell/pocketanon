@@ -95,6 +95,8 @@ impl GlinerModelManager {
     }
 
     fn load_dir(&self, dir: &Path, name: Option<String>, quantization: Option<Quantization>) -> Result<Box<dyn Detector>, String> {
+        // Prefer the requested variant, but an installed one beats a missing one.
+        let quantization = quantization.filter(|q| dir.join(q.onnx_file()).is_file());
         let options = GlinerOptions { name, quantization, ..GlinerOptions::default() };
         let det = GlinerDetector::load(dir, options).map_err(|e| e.to_string())?;
         Ok(Box::new(ModelTypeFilter::new(det)))

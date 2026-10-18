@@ -5,7 +5,8 @@ use pocketanon_core::Language;
 /// An ONNX export precision offered by a Model repository.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Quantization {
-    /// Dynamic int8 quantization (`onnx/model_quantized.onnx`). Smallest and fastest on CPU.
+    /// Dynamic int8 quantization (`onnx/model_quantized.onnx`). Smallest; for
+    /// gliner_multi_pii-v1 it loses most of its recall.
     Int8,
     /// Half precision (`onnx/model_fp16.onnx`).
     Fp16,
@@ -14,9 +15,10 @@ pub enum Quantization {
 }
 
 impl Quantization {
-    /// Preference order when no variant is requested: fp16 first (the int8 export of
-    /// gliner_multi_pii-v1 loses most of its recall, see docs/poc-plan.md).
-    pub const ALL: [Quantization; 3] = [Quantization::Fp16, Quantization::Int8, Quantization::Fp32];
+    /// Preference order when no variant is requested. fp32 first: ONNX Runtime on CPU runs
+    /// fp16 graphs through casts and was measured about 1.5 times slower than fp32; int8 last
+    /// (see docs/poc-plan.md).
+    pub const ALL: [Quantization; 3] = [Quantization::Fp32, Quantization::Fp16, Quantization::Int8];
 
     /// Path of the ONNX file relative to the model directory.
     pub fn onnx_file(self) -> &'static str {
@@ -119,7 +121,7 @@ const GLINER_MULTI_PII_V1: ModelSpec = ModelSpec {
         VariantSpec { quantization: Quantization::Fp16, approx_bytes: 579_717_643 },
         VariantSpec { quantization: Quantization::Fp32, approx_bytes: 1_157_129_714 },
     ],
-    default_quantization: Quantization::Fp16,
+    default_quantization: Quantization::Fp32,
     languages: &["de", "en", "fr", "es", "it", "pt", "nl", "pl"],
     description: "mDeBERTa-based GLiNER fine-tuned for personal information; multilingual.",
 };
@@ -137,7 +139,7 @@ const GLINER_SMALL_V2_1: ModelSpec = ModelSpec {
         VariantSpec { quantization: Quantization::Fp16, approx_bytes: 306_253_040 },
         VariantSpec { quantization: Quantization::Fp32, approx_bytes: 611_293_061 },
     ],
-    default_quantization: Quantization::Fp16,
+    default_quantization: Quantization::Fp32,
     languages: &["en"],
     description: "Smaller, faster general-purpose GLiNER; English only.",
 };
@@ -187,7 +189,7 @@ mod tests {
         let r = Registry::builtin();
         let d = r.default_model();
         assert_eq!(d.id, "gliner_multi_pii_v1");
-        assert_eq!(d.default_quantization, Quantization::Fp16);
+        assert_eq!(d.default_quantization, Quantization::Fp32);
         assert_eq!(
             d.url("onnx/model_quantized.onnx"),
             "https://huggingface.co/onnx-community/gliner_multi_pii-v1/resolve/main/onnx/model_quantized.onnx"

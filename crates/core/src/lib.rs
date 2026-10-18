@@ -28,7 +28,7 @@ pub use chunk::{Chunk, ChunkPlan};
 pub use detector::{DetectRequest, Detector, DetectorError, DetectorKind, FnDetector};
 pub use document::{AnonymizableDocument, DocumentError, Format, PageImage, Placement, Rect, Segment, SegmentEdits, SegmentId, SegmentKind, TextHit};
 pub use merge::merge;
-pub use pipeline::{Pipeline, PipelineConfig};
+pub use pipeline::{PACK_MAX_WORDS, PACK_SHORT_WORDS, PROGRESS_SLICE, Pipeline, PipelineConfig, Progress};
 pub use replace::{Indexer, Replacement, Strategy, apply, apply_replacements, plan_replacements};
 pub use review::{CandidateId, ReviewItem};
 pub use review::Review;
